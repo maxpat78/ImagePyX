@@ -3,9 +3,9 @@ SWIMMU.PY - Part of Super Simple WIM Manager
 Update module
 '''
 
-VERSION = '0.20'
+VERSION = '0.22'
 
-COPYRIGHT = '''Copyright (C)2012, by maxpat78. GNU GPL v2 applies.
+COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
 
 import hashlib
@@ -83,7 +83,7 @@ def update(opts, args):
 
 	# Collects input files
 	print "Collecting new files..."
-	direntries_size, entries, subdirs = make_direntries(srcdir, opts.exclude_list)
+	direntries_size, entries, subdirs, total_input_bytes = make_direntries(srcdir, opts.exclude_list)
 
 	# Flags the header for writing in progress
 	wim.dwFlags |= 0x40
@@ -93,7 +93,7 @@ def update(opts, args):
 	out.seek(0, 2)
 	
 	print "Packing contents..."
-	totalBytes, RefCounts = make_fileresources(out, COMPRESSION_TYPE, entries, RefCounts)
+	totalBytes, RefCounts = make_fileresources(out, COMPRESSION_TYPE, entries, RefCounts, total_input_bytes, StartTime)
 
 	metadata_size = direntries_size # in fact should be: security_size + direntries_size
 	

@@ -3,9 +3,9 @@ SSWIMMC.PY - Super Simple WIM Manager
 Creator module - Multithreaded version
 '''
 
-VERSION = '0.20'
+VERSION = '0.22'
 
-COPYRIGHT = '''Copyright (C)2012, by maxpat78. GNU GPL v2 applies.
+COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
 
 import fnmatch
@@ -125,6 +125,7 @@ def make_direntries(directory, excludes=None):
 		return True in map(lambda x:fnmatch.fnmatch(i_pname, x) or fnmatch.fnmatch(i_pname, x+'\\*'), excludes)
 	directory = os.path.normpath(unicode(directory))
 	direntries = []
+	total_input_bytes = 0
 
 	# root DIRENTRY offset relative to Metadata resource start
 	pos = 8 # relative offset of the next subdir content
@@ -151,6 +152,7 @@ def make_direntries(directory, excludes=None):
 				pname = '\\\\?\\' + os.path.abspath(pname) # access pathnames > 255
 			direntries += [make_direntry(pname)]
 			pos += direntries[-1].liLength
+			total_input_bytes += direntries[-1].FileSize
 			logging.debug("Made File DIRENTRY %s", pname)
 		for item in dirs:
 			if root not in subdirs:
@@ -164,12 +166,13 @@ def make_direntries(directory, excludes=None):
 			direntries += [make_direntry(pname)]
 			logging.debug("Made Folder DIRENTRY %s", item)
 			pos += direntries[-1].liLength
+			total_input_bytes += direntries[-1].FileSize
 		if root not in subdirs: # an empty folder must point to the following NULL QWORD
 			subdirs[root] = pos
 		direntries += [DirEntry(255*'\0')]
 		pos += 8
 		logging.debug("Made NULL QWORD (end of folder)")
-	return pos, direntries, subdirs
+	return pos, direntries, subdirs, total_input_bytes
 
 def compressor_thread(q, refcounts):
 	while True:
@@ -197,7 +200,7 @@ def compressor_thread(q, refcounts):
 		done += [e]
 		q.task_done()
 		
-def make_fileresources(out, comp, entries, refcounts):
+def make_fileresources(out, comp, entries, refcounts, total_input_bytes, start_time):
 	"Packs the files content into the image, discarding duplicates according to their SHA-1"
 	totalBytes = 0 # Total bytes for files uncompressed content, duplicates included
 	done = []
@@ -230,6 +233,9 @@ def make_fileresources(out, comp, entries, refcounts):
 		e = done.pop(0)
 		done_entries += 1
 		totalBytes += e.FileSize
+		pct_done = 100*float(totalBytes)/float(total_input_bytes)
+		avg_secs_remaining = (time.time() - start_time) / pct_done * 100 - (time.time() - start_time)
+		sys.stdout.write('%.02f%% done, %s left\r' % (pct_done, datetime.timedelta(seconds=int(avg_secs_remaining))))
 		if e.bHash in refcounts:
 			h = refcounts[e.bHash]
 			refcounts[e.bHash] = (h[0], h[1], h[2], h[3]+1, h[4])
@@ -386,12 +392,12 @@ def create(opts, args):
 
 	# Collects input files
 	print "Collecting files..."
-	direntries_size, entries, subdirs = make_direntries(srcdir, opts.exclude_list)
+	direntries_size, entries, subdirs, total_input_bytes = make_direntries(srcdir, opts.exclude_list)
 	
 	# 2 - File contents
 	print "Packing contents..."
 	RefCounts = {} # {sha-1: (offset, size, csize, count, flags)}
-	imgTotalBytes, RefCounts = make_fileresources(out, COMPRESSION_TYPE, entries, RefCounts)
+	imgTotalBytes, RefCounts = make_fileresources(out, COMPRESSION_TYPE, entries, RefCounts, total_input_bytes, StartTime)
 	
 	metadata_size = direntries_size # in fact should be: security_size + direntries_size
 		

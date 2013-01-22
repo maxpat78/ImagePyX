@@ -3,9 +3,9 @@ ImagePyX.py - Super Simple WIM Manager
 Driver main module
 '''
 
-VERSION = '0.20'
+VERSION = '0.22'
 
-COPYRIGHT = '''Copyright (C)2012, by maxpat78. GNU GPL v2 applies.
+COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
 
 import optparse
@@ -80,15 +80,17 @@ if __name__ == '__main__':
 		if len(args) < 1:
 			print "You must specify a WIM file (and, optionally, an image index or name) to test!\n"
 			sys.exit(1)
-		test(opts, args)
+		extract_test(opts, args, True)
 	elif opts.sub_module == 5:
 		if len(args) < 2:
 			print "You must specify a WIM file to split and a SWM unit size in megabytes!\n"
 			sys.exit(1)
 		split(opts, args)
 	elif opts.sub_module == 6:
-		print "Not implemented yet."
-		sys.exit(1)
+		if len(args) < 3:
+			print "You must specify a WIM file, an image to extract and a destination folder!\n"
+			sys.exit(1)
+		extract_test(opts, args)
 	elif opts.sub_module == 7:
 		if len(args) < 1:
 			print "You must specify a WIM file to show the XML data!\n"

@@ -3,9 +3,9 @@ SWIMMD.PY - Part of Super Simple WIM Manager
 Decompressor module
 '''
 
-VERSION = '0.20'
+VERSION = '0.22'
 
-COPYRIGHT = '''Copyright (C)2012, by maxpat78. GNU GPL v2 applies.
+COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
 
 import hashlib
@@ -14,6 +14,7 @@ import optparse
 import os
 import struct
 import sys
+import time
 import tempfile
 from ctypes import *
 from datetime import datetime as dt
@@ -173,9 +174,15 @@ def get_image_from_id(wim, fp, id):
 			sys.exit(1)
 	return img_index
 
+def extract_test(opts, args, testmode=False):
+	def make_dest(prefix, suffix, check=False):
+		s = os.path.join(prefix, suffix[1:])
+		if not os.path.exists(os.path.dirname(s)):
+			os.makedirs(os.path.dirname(s))
+		# Overwrite by default, like ImageX: provide an option to choose?
+		return open(s, 'wb')
 
-def test(opts, args):
-	StartTime = dt.now()
+	StartTime = time.time()
 
 	fpi = open(args[0], 'rb')
 
@@ -200,16 +207,20 @@ def test(opts, args):
 	images = get_images(fpi, wim)
 	
 	if img_index > len(images):
-		print "Image to update doesn't exist!"
+		print "Image index doesn't exist!"
 		sys.exit(1)
 	img_index -= 1
 	
 	if img_index > -1:
 		images = [images[img_index]]
-	
+
+	if not testmode:
+		if not os.path.exists(args[2]):
+			print "Destination directory '%s' does not exist: aborting!" % args[2]
+			sys.exit(1)
+		
 	for image in images:
 		img_index += 1
-		print "--- Testing Image with index %d..." % img_index
 		
 		status = check_integrity(wim, fpi)
 		if status == -1:
@@ -237,13 +248,21 @@ def test(opts, args):
 		print "Collecting DIRENTRY table..."
 		direntries, directories = get_direntries(metadata)
 
-		print "Checking File resources..."
 		badfiles = 0
+		totalOutputBytes, totalBytes = 0, 0
+		for ote in offset_table.values():
+			totalOutputBytes +=ote.rhOffsetEntry.liOriginalSize
+		
+		if not testmode:
+			print "Extracting File resources..."
+			# calculates total bytes to extract
+		else:
+			print "Testing File resources..."
+			
 		for ote in offset_table.values():
 			# Skip Images
 			if ote.rhOffsetEntry.bFlags & 2: continue
 			file_res = get_resource(fpi, ote, COMPRESSION_TYPE)
-			copy(file_res, None)
 			if ote.bHash in direntries:
 				fname = direntries[ote.bHash][0].FileName
 			else:
@@ -252,8 +271,20 @@ def test(opts, args):
 				fname = os.path.join(directories[direntries[ote.bHash][0]._parent],fname)
 			else:
 				fname = '[Unnamed entry]'
+				
+			if not testmode:
+				copy(file_res, make_dest(args[2], fname))
+			else:
+				copy(file_res, None)
+				
+			totalBytes += ote.rhOffsetEntry.liOriginalSize
+			pct_done = 100*float(totalBytes)/float(totalOutputBytes)
+			avg_secs_remaining = (time.time() - StartTime) / pct_done * 100 - (time.time() - StartTime)
+			sys.stdout.write('%.02f%% done, %s left\r' % (pct_done, datetime.timedelta(seconds=int(avg_secs_remaining))))
+			
 			if file_res.sha1.digest() != ote.bHash:
 				badfiles += 1
+				print "File '%s' corrupted!", fname
 				logging.debug("CRC error for %s", fname)
 			else:
 				logging.debug("Good CRC for %s", fname)
@@ -261,8 +292,11 @@ def test(opts, args):
 		if badfiles:
 			print "%d/%d corrupted files detected." % (badfiles,len(direntries))
 		else:
-			print "All files (%d) are OK."%len(direntries)
+			if not testmode:
+				print "Successfully restored %d files."%len(direntries)
+			else:
+				print "All File resources (%d) are OK!"%len(direntries)
 
-	StopTime = dt.now()
+	StopTime = time.time()
 
-	print "Done. %s time elapsed." % (StopTime-StartTime)
+	print "Done. %s time elapsed." % datetime.timedelta(seconds=int(StopTime-StartTime))
