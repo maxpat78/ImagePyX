@@ -62,3 +62,6 @@ FEB 2012	Planning the WIM archive classes
 24.10.12 r.0.20	reorganized code in SSWIMM package with ImagePyX driver :)
 17.01.13 r.0.21 added progress indicator (% done and time)
 22.01.13 r.0.22 can extract images
+		unified progress indicator
+		use NTDLL codecs when available (Windows 8)
+		fixed RTL Xpress Huffman decompressor

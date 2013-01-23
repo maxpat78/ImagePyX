@@ -15,7 +15,9 @@ import hashlib
 import logging
 import os
 import struct
+import sys
 import tempfile
+import time
 import uuid
 from ctypes import *
 from cStringIO import StringIO
@@ -52,12 +54,32 @@ def ux2nttime(t):
 	"Converte data e ora dal formato Python (Unix) a NT"
 	return int((t+11644473600L)*10000000L)
 
+def print_progress(start_time, totalBytes, totalBytesToDo):
+	pct_done = 100*float(totalBytes)/float(totalBytesToDo)
+	avg_secs_remaining = (time.time() - start_time) / pct_done * 100 - (time.time() - start_time)
+	sys.stdout.write('%.02f%% done, %s left\r' % (pct_done, datetime.timedelta(seconds=int(avg_secs_remaining))))
+
 def rtl_xpress_huff_compress(ins, cbins, outs, cbouts):
 	"Performs XPRESS Huffman compression with Windows 8 NTDLL"
 	comp_len = c_int()
-	ws = create_string_buffer(128*1024)
-	assert not windll.nntdll.RtlCompressBuffer(4, ins, cbins, outs, cbouts, 4096, byref(comp_len), ws)
+	ws = create_string_buffer(rtl_get_xpess_huff_workspace())
+	assert not windll.ntdll.RtlCompressBuffer(4, ins, cbins, outs, cbouts, 4096, byref(comp_len), ws)
 	return comp_len.value
+
+def rtl_xpress_huff_decompress(ins, cbins, outs, cbouts):
+	"Performs XPRESS Huffman decompression with Windows 8 NTDLL"
+	uncomp_len = c_int()
+	ws = create_string_buffer(rtl_get_xpess_huff_workspace())
+	# Warning! cbouts (output buffer size) MUST be equal to the expected output size!
+	assert not windll.ntdll.RtlDecompressBufferEx(4, outs, cbouts, ins, cbins, byref(uncomp_len), ws)
+	return uncomp_len.value
+
+def rtl_get_xpess_huff_workspace():
+	"Determines workspace size for RTL codecs"
+	CompressBufferWorkSpaceSize = c_uint()
+	CompressFragmentWorkSpaceSize = c_uint()
+	windll.ntdll.RtlGetCompressionWorkSpaceSize(0x104, byref(CompressBufferWorkSpaceSize), byref(CompressFragmentWorkSpaceSize))
+	return max(CompressBufferWorkSpaceSize.value, CompressFragmentWorkSpaceSize.value)
 
 def wim_is_clean(wim, fp):
 	"Ensures there's no garbage after XML data"
@@ -372,8 +394,15 @@ class InputStream:
 		self._opos = 0 # current output stream offset
 		self.csize = csize # total compressed data size (with chunk pointers)
 		if self.compressionType == 1:
-			self.decompress = cdll.MSCompression.xpress_huff_decompress
-			#~ self.decompress = rtl_xpress_huff_decompress
+			if sys.platform == 'win32':
+				V = sys.getwindowsversion()
+				if V.major >= 6 and V.minor >= 2:
+					self.decompress = rtl_xpress_huff_decompress
+					logging.debug("Using RTL XPRESS Huffman decompressor")
+				else:
+					self.decompress = cdll.MSCompression.xpress_huff_decompress
+					logging.debug("Using MSCompression XPRESS Huffman decompressor")
+			#~ self.decompress = cdll.MSCompression.xpress_huff_decompress
 		elif self.compressionType == 2:
 			self.decompress = cdll.MSCompression.lzx_wim_decompress
 		self.read = self.__read_comp
@@ -407,8 +436,10 @@ class InputStream:
 				self._opos += len(self._ibuf)
 				logging.debug("Read uncompressed chunk %d/%d @%08X", self._iblk, self._blks, self._pos + self._blks*4 + self._ipos)
 			elif 0 < cb < 32768 and cb != self.size - self._opos:
+				residual_uncompressed_bytes = self.size - self._opos
 				try:
-					cbo = self.decompress(self._ibuf, cb, self._obuf, 32768+6144)
+					# Rtl decompressor requires a buffer size equal to the requested output size!
+					cbo = self.decompress(self._ibuf, cb, self._obuf, (32768, residual_uncompressed_bytes)[residual_uncompressed_bytes < 32768])
 					#~ cbo = self.decompress(self._ibuf, cb, self._obuf, 32768*4)
 				except:
 					cbo = -1
@@ -462,8 +493,14 @@ class OutputStream:
 		self._iblk = 0 # current output block index
 		self._ipos = 0 # current output block offset
 		if self.compressionType == 1:
-			self.compress = cdll.MSCompression.xpress_huff_compress
-			#~ self.compress = rtl_xpress_huff_compress
+			if sys.platform == 'win32':
+				V = sys.getwindowsversion()
+				if V.major >= 6 and V.minor >= 2:
+					self.compress = rtl_xpress_huff_compress
+					logging.debug("Using RTL XPRESS Huffman compressor")
+				else:
+					self.compress = cdll.MSCompression.xpress_huff_compress
+					logging.debug("Using RTL XPRESS Huffman compressor")
 		elif self.compressionType == 2:
 			self.compress = cdll.MSCompression.lzx_wim_compress
 		self.write = self.__write_comp

@@ -278,10 +278,7 @@ def extract_test(opts, args, testmode=False):
 				copy(file_res, None)
 				
 			totalBytes += ote.rhOffsetEntry.liOriginalSize
-			pct_done = 100*float(totalBytes)/float(totalOutputBytes)
-			avg_secs_remaining = (time.time() - StartTime) / pct_done * 100 - (time.time() - StartTime)
-			sys.stdout.write('%.02f%% done, %s left\r' % (pct_done, datetime.timedelta(seconds=int(avg_secs_remaining))))
-			
+			print_progress(StartTime, totalBytes, totalOutputBytes)			
 			if file_res.sha1.digest() != ote.bHash:
 				badfiles += 1
 				print "File '%s' corrupted!", fname

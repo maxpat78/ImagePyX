@@ -233,9 +233,7 @@ def make_fileresources(out, comp, entries, refcounts, total_input_bytes, start_t
 		e = done.pop(0)
 		done_entries += 1
 		totalBytes += e.FileSize
-		pct_done = 100*float(totalBytes)/float(total_input_bytes)
-		avg_secs_remaining = (time.time() - start_time) / pct_done * 100 - (time.time() - start_time)
-		sys.stdout.write('%.02f%% done, %s left\r' % (pct_done, datetime.timedelta(seconds=int(avg_secs_remaining))))
+		print_progress(start_time, totalBytes, total_input_bytes)
 		if e.bHash in refcounts:
 			h = refcounts[e.bHash]
 			refcounts[e.bHash] = (h[0], h[1], h[2], h[3]+1, h[4])
