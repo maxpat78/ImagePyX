@@ -121,7 +121,7 @@ def make_securityblock():
 def make_direntries(directory, excludes=None):
 	def is_excluded(s, excludes):
 		i_pname = s[s.find('\\'):] # pathname how it will be inside the image
-		# if the excluded item is a dir, we want exclude subcontents also! (x+\*)
+		# if the excluded item is a dir, we want subcontents excluded also! (x+\*)
 		return True in map(lambda x:fnmatch.fnmatch(i_pname, x) or fnmatch.fnmatch(i_pname, x+'\\*'), excludes)
 	directory = os.path.normpath(unicode(directory))
 	direntries = []

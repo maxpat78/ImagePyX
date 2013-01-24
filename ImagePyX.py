@@ -56,7 +56,7 @@ if __name__ == '__main__':
 			opts.exclude_list = []
 		for line in open(opts.exclude_file):
 			opts.exclude_list += [line[:-1]]
-		print opts.exclude_list
+		print "These items will be excluded from capture:\n", opts.exclude_list
 			
 	if opts.sub_module == 1:
 		if len(args) < 2:

@@ -15,7 +15,7 @@ and
 FOLDER CONTENTS
 ===============
 
-- ImagePyX.py				the main Python module (rev. 0.20), driver for the SSWIMM package
+- ImagePyX.py				the main Python module (rev. 0.22), driver for the SSWIMM package
 - SSWIMM					package directory containing the code for [C]reate WIM images, [U]pdate,
 						[S]plit, [D]ecompress, [A]ppend and get [I]nformations.
 - README.MD				this file
@@ -25,8 +25,8 @@ FOLDER CONTENTS
 TODO
 ====
 
+- restore times/perms on extracted files
 - read items to test from DIRENTRY table instead of Offset Table; or
-- general test, opening all DIRENTRY tables in WIM
 - resolve conflict between images with the same name?
 - set FLAG_HEADER_RESOURCE_ONLY, FLAG_HEADER_METADATA_ONLY in WIM header
 - investigate around RESHDR_FLAG_FREE

@@ -59,27 +59,24 @@ def print_progress(start_time, totalBytes, totalBytesToDo):
 	avg_secs_remaining = (time.time() - start_time) / pct_done * 100 - (time.time() - start_time)
 	sys.stdout.write('%.02f%% done, %s left\r' % (pct_done, datetime.timedelta(seconds=int(avg_secs_remaining))))
 
-def rtl_xpress_huff_compress(ins, cbins, outs, cbouts):
-	"Performs XPRESS Huffman compression with Windows 8 NTDLL"
-	comp_len = c_int()
-	ws = create_string_buffer(rtl_get_xpess_huff_workspace())
-	assert not windll.ntdll.RtlCompressBuffer(4, ins, cbins, outs, cbouts, 4096, byref(comp_len), ws)
-	return comp_len.value
-
-def rtl_xpress_huff_decompress(ins, cbins, outs, cbouts):
-	"Performs XPRESS Huffman decompression with Windows 8 NTDLL"
-	uncomp_len = c_int()
-	ws = create_string_buffer(rtl_get_xpess_huff_workspace())
-	# Warning! cbouts (output buffer size) MUST be equal to the expected output size!
-	assert not windll.ntdll.RtlDecompressBufferEx(4, outs, cbouts, ins, cbins, byref(uncomp_len), ws)
-	return uncomp_len.value
-
-def rtl_get_xpess_huff_workspace():
-	"Determines workspace size for RTL codecs"
-	CompressBufferWorkSpaceSize = c_uint()
-	CompressFragmentWorkSpaceSize = c_uint()
-	windll.ntdll.RtlGetCompressionWorkSpaceSize(0x104, byref(CompressBufferWorkSpaceSize), byref(CompressFragmentWorkSpaceSize))
-	return max(CompressBufferWorkSpaceSize.value, CompressFragmentWorkSpaceSize.value)
+class XpressHuffCodec:
+	"Performs XPRESS Huffman (de)compression with Windows 8 NTDLL"
+	def __init__(self):
+		CompressBufferWorkSpaceSize, CompressFragmentWorkSpaceSize = c_uint(), c_uint()
+		windll.ntdll.RtlGetCompressionWorkSpaceSize(0x104, byref(CompressBufferWorkSpaceSize), byref(CompressFragmentWorkSpaceSize))
+		self.workspace = max(CompressBufferWorkSpaceSize.value, CompressFragmentWorkSpaceSize.value)
+		self.workspace = create_string_buffer(self.workspace)
+	
+	def compress(self, ins, cbins, outs, cbouts):
+		comp_len = c_int()
+		assert not windll.ntdll.RtlCompressBuffer(4, ins, cbins, outs, cbouts, 4096, byref(comp_len), self.workspace)
+		return comp_len.value
+		
+	def decompress(self, ins, cbins, outs, cbouts):
+		uncomp_len = c_int()
+		# Warning! cbouts (output buffer size) MUST be equal to the expected output size!
+		assert not windll.ntdll.RtlDecompressBufferEx(4, outs, cbouts, ins, cbins, byref(uncomp_len), self.workspace)
+		return uncomp_len.value
 
 def wim_is_clean(wim, fp):
 	"Ensures there's no garbage after XML data"
@@ -397,7 +394,7 @@ class InputStream:
 			if sys.platform == 'win32':
 				V = sys.getwindowsversion()
 				if V.major >= 6 and V.minor >= 2:
-					self.decompress = rtl_xpress_huff_decompress
+					self.decompress = XpressHuffCodec().decompress
 					logging.debug("Using RTL XPRESS Huffman decompressor")
 				else:
 					self.decompress = cdll.MSCompression.xpress_huff_decompress
@@ -496,7 +493,7 @@ class OutputStream:
 			if sys.platform == 'win32':
 				V = sys.getwindowsversion()
 				if V.major >= 6 and V.minor >= 2:
-					self.compress = rtl_xpress_huff_compress
+					self.compress = XpressHuffCodec().compress
 					logging.debug("Using RTL XPRESS Huffman compressor")
 				else:
 					self.compress = cdll.MSCompression.xpress_huff_compress

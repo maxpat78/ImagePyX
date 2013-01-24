@@ -8,6 +8,7 @@ VERSION = '0.22'
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
 
+import fnmatch
 import hashlib
 import logging
 import optparse
@@ -182,6 +183,11 @@ def extract_test(opts, args, testmode=False):
 		# Overwrite by default, like ImageX: provide an option to choose?
 		return open(s, 'wb')
 
+	def is_excluded(s, excludes):
+		i_pname = s[s.find('\\'):] # pathname how it will be inside the image
+		# if the excluded item is a dir, we want subcontents excluded also! (x+\*)
+		return True in map(lambda x:fnmatch.fnmatch(i_pname, x) or fnmatch.fnmatch(i_pname, x+'\\*'), excludes)
+
 	StartTime = time.time()
 
 	fpi = open(args[0], 'rb')
@@ -218,9 +224,11 @@ def extract_test(opts, args, testmode=False):
 		if not os.path.exists(args[2]):
 			print "Destination directory '%s' does not exist: aborting!" % args[2]
 			sys.exit(1)
-		
+
 	for image in images:
 		img_index += 1
+		
+		print "Processing Image #%d" % (1, img_index)[img_index > 0]
 		
 		status = check_integrity(wim, fpi)
 		if status == -1:
@@ -249,6 +257,7 @@ def extract_test(opts, args, testmode=False):
 		direntries, directories = get_direntries(metadata)
 
 		badfiles = 0
+		total_restored_files = 1
 		totalOutputBytes, totalBytes = 0, 0
 		for ote in offset_table.values():
 			totalOutputBytes +=ote.rhOffsetEntry.liOriginalSize
@@ -267,13 +276,23 @@ def extract_test(opts, args, testmode=False):
 				fname = direntries[ote.bHash][0].FileName
 			else:
 				fname = '[Unnamed entry]'
+				if not testmode:
+					# Skips unnamed entry, not belonging to processed image
+					continue
 			if ote.bHash in direntries and direntries[ote.bHash][0]._parent in directories:
 				fname = os.path.join(directories[direntries[ote.bHash][0]._parent],fname)
 			else:
 				fname = '[Unnamed entry]'
 				
 			if not testmode:
-				copy(file_res, make_dest(args[2], fname))
+				if not opts.exclude_list or not is_excluded(fname, opts.exclude_list):
+					dst = make_dest(args[2], fname)
+					copy(file_res, dst)
+					#~ os.utime(dst.name, (nt2uxtime(direntries[ote.bHash][0].liLastAccessTime), nt2uxtime(direntries[ote.bHash][0].liLastWriteTime)))
+					total_restored_files += 1
+				else:
+					totalBytes += ote.rhOffsetEntry.liOriginalSize
+					continue
 			else:
 				copy(file_res, None)
 				
@@ -290,7 +309,10 @@ def extract_test(opts, args, testmode=False):
 			print "%d/%d corrupted files detected." % (badfiles,len(direntries))
 		else:
 			if not testmode:
-				print "Successfully restored %d files."%len(direntries)
+				if total_restored_files == len(direntries):
+					print "Successfully restored %d files."%len(direntries)
+				else:
+					print "Successfully restored %d files (%d excluded)." % (total_restored_files, len(direntries)-total_restored_files)
 			else:
 				print "All File resources (%d) are OK!"%len(direntries)
 

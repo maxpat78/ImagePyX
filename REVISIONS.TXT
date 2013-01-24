@@ -65,3 +65,6 @@ FEB 2012	Planning the WIM archive classes
 		unified progress indicator
 		use NTDLL codecs when available (Windows 8)
 		fixed RTL Xpress Huffman decompressor
+		can exclude files during extraction
+		skips items not belonging to the selected image
+		minimized RTL codec workspace reallocations
