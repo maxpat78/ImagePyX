@@ -288,7 +288,10 @@ def extract_test(opts, args, testmode=False):
 				if not opts.exclude_list or not is_excluded(fname, opts.exclude_list):
 					dst = make_dest(args[2], fname)
 					copy(file_res, dst)
-					#~ os.utime(dst.name, (nt2uxtime(direntries[ote.bHash][0].liLastAccessTime), nt2uxtime(direntries[ote.bHash][0].liLastWriteTime)))
+					dst.close()
+					os.utime(dst.name, (direntries[ote.bHash][0].liLastAccessTime/10000000 - 11644473600, direntries[ote.bHash][0].liLastWriteTime/10000000 - 11644473600))
+					if sys.platform in ('win32', 'cygwin'):
+						windll.kernel32.SetFileAttributesW(dst.name, direntries[ote.bHash][0].dwAttributes)
 					total_restored_files += 1
 				else:
 					totalBytes += ote.rhOffsetEntry.liOriginalSize

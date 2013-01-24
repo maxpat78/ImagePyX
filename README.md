@@ -25,7 +25,6 @@ FOLDER CONTENTS
 TODO
 ====
 
-- restore times/perms on extracted files
 - read items to test from DIRENTRY table instead of Offset Table; or
 - resolve conflict between images with the same name?
 - set FLAG_HEADER_RESOURCE_ONLY, FLAG_HEADER_METADATA_ONLY in WIM header

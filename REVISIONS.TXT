@@ -68,3 +68,4 @@ FEB 2012	Planning the WIM archive classes
 		can exclude files during extraction
 		skips items not belonging to the selected image
 		minimized RTL codec workspace reallocations
+		restore times/attributes on extracted files
