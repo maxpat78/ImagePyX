@@ -1,9 +1,9 @@
 '''
 SWIMMU.PY - Part of Super Simple WIM Manager
-Update module
+Updater module
 '''
 
-VERSION = '0.22'
+VERSION = '0.23'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
@@ -17,6 +17,7 @@ import sys
 import tempfile
 import threading
 from ctypes import *
+from collections import OrderedDict
 from datetime import datetime as dt
 from WIMArchive import *
 from SSWIMMC import *
@@ -24,7 +25,7 @@ from SSWIMMD import *
 
 def update(opts, args):
 	srcdir = args[1]
-	RefCounts = {}
+	RefCounts = OrderedDict()
 	
 	StartTime = time.time()
 
@@ -38,13 +39,7 @@ def update(opts, args):
 		print "WIM header has READ-ONLY flag set, aborting update..."
 		sys.exit(1)
 		
-	COMPRESSION_TYPE = 0
-	if wim.dwFlags & 0x20000:
-		COMPRESSION_TYPE = 1
-	elif wim.dwFlags & 0x40000:
-		COMPRESSION_TYPE = 2
-
-	print "Compression is", ('none', 'XPRESS', 'LZX')[COMPRESSION_TYPE]
+	COMPRESSION_TYPE = get_wim_comp(wim)
 
 	offset_table = get_offsettable(out, wim)
 	images = get_images(out, wim)
@@ -64,22 +59,13 @@ def update(opts, args):
 		RefCounts[o.bHash] = [o.rhOffsetEntry.liOffset, o.rhOffsetEntry.liOriginalSize, o.rhOffsetEntry.ullSize, o.dwRefCount, o.rhOffsetEntry.bFlags]
 
 	print "Opening Metadata resource..."
-	metadata_res = get_resource(out, images[image_index_to_update], COMPRESSION_TYPE)
-
-	metadata = tempfile.TemporaryFile()
-	copy(metadata_res, metadata)
-
-	if metadata_res.sha1.digest() != images[image_index_to_update].bHash:
-		logging.debug("FATAL: broken Metadata resource!")
-		sys.exit(1)
-	else:
-		logging.debug("Metadata checked!")
+	metadata = get_metadata(out, images[image_index_to_update], COMPRESSION_TYPE)
 
 	direntries, directories = get_direntries(metadata)
 
 	for e in direntries:
 		if e in RefCounts:
-			RefCounts[e][3] = RefCounts[e][3] - 1 # decrease dwRefCount
+			RefCounts[e][3] = RefCounts[e][3] - len(direntries[e]) # decrease dwRefCount by amount referred to this image
 
 	# Collects input files
 	print "Collecting new files..."
@@ -158,11 +144,11 @@ def update(opts, args):
 	
 	finalize_wimheader(wim, out)
 
-	print "Done. %s time elapsed." % (dt.now() - dt.fromtimestamp(StartTime))
+	print_timings(StartTime, StopTime)
 
 
 def delete(opts, args):
-	RefCounts = {}
+	RefCounts = OrderedDict()
 	
 	StartTime = time.time()
 
@@ -217,7 +203,7 @@ def delete(opts, args):
 
 	for e in direntries:
 		if e in RefCounts:
-			RefCounts[e][3] = RefCounts[e][3] - 1 # decrease dwRefCount
+			RefCounts[e][3] = RefCounts[e][3] - len(direntries[e]) # decrease dwRefCount by amount referred to this image
 
 	# Flags the header for writing in progress
 	wim.dwFlags |= 0x40
@@ -236,7 +222,8 @@ def delete(opts, args):
 	logging.debug("Writing Offset table @0x%08X", wim.rhOffsetTable.liOffset)
 
 	del images[image_index_to_update] 
-
+	wim.dwImageCount -= 1 # decrease Image count
+	
 	for img in images:
 		logging.debug("Writing offset entry for image @0x%08X", img.rhOffsetEntry.liOffset)
 		out.write(img.tostr())
@@ -267,4 +254,4 @@ def delete(opts, args):
 	
 	finalize_wimheader(wim, out)
 
-	print "Done. %s time elapsed." % (dt.now() - dt.fromtimestamp(StartTime))
+	print_timings(StartTime, StopTime)

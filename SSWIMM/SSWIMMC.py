@@ -3,7 +3,7 @@ SSWIMMC.PY - Super Simple WIM Manager
 Creator module - Multithreaded version
 '''
 
-VERSION = '0.22'
+VERSION = '0.23'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
@@ -19,6 +19,7 @@ import tempfile
 import time
 import threading
 import uuid
+from collections import OrderedDict
 from ctypes import *
 from datetime import datetime as dt
 from xml.etree import ElementTree as ET
@@ -88,9 +89,9 @@ def make_direntry(pathname, isroot=0):
 		if e.dwAttributes == -1:
 			logging.debug("GetFileAttributesW returned -1 on %s", pathname)
 			e.dwAttributes = 0x20
-		#~ short_pathname = create_string_buffer(len(pathname)*2)
-		#~ windll.kernel32.GetShortPathNameW(pathname, short_pathname, 2*len(pathname))
-		#~ print short_pathname.value
+		#~ short_pathname = create_string_buffer(len(pathname)*2+2)
+		#~ print windll.kernel32.GetShortPathNameW(pathname, short_pathname, 2*len(pathname)+2)
+		#~ print short_pathname.raw
 	if os.path.isfile(pathname):
 		e.dwAttributes = 0x20
 	else:
@@ -129,7 +130,7 @@ def make_direntries(directory, excludes=None):
 
 	# root DIRENTRY offset relative to Metadata resource start
 	pos = 8 # relative offset of the next subdir content
-	subdirs = {} # {parent folder: childs offset}
+	subdirs = OrderedDict() # {parent folder: childs offset}
 	for root, dirs, files in os.walk(directory):
 		logging.debug("root is now %s", root)
 		if excludes and is_excluded(root, excludes):
@@ -394,7 +395,7 @@ def create(opts, args):
 	
 	# 2 - File contents
 	print "Packing contents..."
-	RefCounts = {} # {sha-1: (offset, size, csize, count, flags)}
+	RefCounts = OrderedDict() # {sha-1: (offset, size, csize, count, flags)}
 	imgTotalBytes, RefCounts = make_fileresources(out, COMPRESSION_TYPE, entries, RefCounts, total_input_bytes, StartTime)
 	
 	metadata_size = direntries_size # in fact should be: security_size + direntries_size
@@ -446,4 +447,4 @@ def create(opts, args):
 		
 	finalize_wimheader(wim, out)
 
-	print "Done. %s time elapsed." % (dt.now() - dt.fromtimestamp(StartTime))
+	print_timings(StartTime, StopTime)

@@ -66,6 +66,32 @@ FEB 2012	Planning the WIM archive classes
 		use NTDLL codecs when available (Windows 8)
 		fixed RTL Xpress Huffman decompressor
 		can exclude files during extraction
-		skips items not belonging to the selected image
+		skip items not belonging to the selected image
 		minimized RTL codec workspace reallocations
-		restore times/attributes on extracted files
+		restore times/attributes (except last access) on extracted files
+26.01.13 r.0.23 can export an image to a new WIM
+		unified code for Metadata access and timing reports
+		fixed a bug in dwRefCount when updating/deleting an image
+		changed some command names in ImagePyX to resemble ImageX
+		beautified info output (thanks to minidom)
+		replaced dict() with OrderedDict() to speedup some operations
+		correctly decrease dwImageCount when deleting an Image
+
+
+TODO
+====
+- multiple images export
+- change image name/description in XML data with --info
+- optimization/cleanup of unused resources in an updated WIM
+- merge/read from multiple SWM
+- resolve conflict between images with the same name?
+- set FLAG_HEADER_RESOURCE_ONLY, FLAG_HEADER_METADATA_ONLY in WIM header
+- investigate around RESHDR_FLAG_FREE
+- compare valid WIM size with xmldata?
+- XML tools to represent path tree?
+- linearize compressed resources logic (blocks first, pointers last)
+- switch to ctypes structures to speedup? [ABORTED]
+- multithreaded decompressor?
+- short names
+- ADS and hard/soft links
+- add security descriptors (may require privileges!)

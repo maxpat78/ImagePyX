@@ -1,44 +1,35 @@
-ImagePyX.py and SSWIMM
-====================
+ImagePyX and SSWIMM
+===================
 
-This is a Super Simple WIM Manager written entirely in Python (except for the compression code, found at
-https://github.com/coderforlife/ms-compress: please note that while XPRESS compression seems to work well,
-this is not completely true for LZX implementation).
+This is a Super Simple WIM Manager written entirely in Python[*] (except for the compression code, found at
+https://github.com/coderforlife/ms-compress: please note that only XPRESS compression works well, actually).
 
-It's able to create, append, update, extract and split WIM Images: look at
+With ImagePyX you can:
+- capture a directory tree to a WIM Image, eventually compressing it and excluding files/folders
+- update or delete an image inside a WIM
+- append new images to a WIM
+- apply (extract) an image from WIM unit to a directory, optionally excluding files/folders
+- split a WIM into more SWM units
+- export an image to a new WIM
+- list and test image contents
+
+
+Useful links about WIM Images:
 	http://en.wikipedia.org/wiki/Windows_Imaging_Format
-and
 	http://technet.microsoft.com/en-us/library/cc507842.aspx
 
 
-
-FOLDER CONTENTS
-===============
-
-- ImagePyX.py				the main Python module (rev. 0.22), driver for the SSWIMM package
-- SSWIMM					package directory containing the code for [C]reate WIM images, [U]pdate,
-						[S]plit, [D]ecompress, [A]ppend and get [I]nformations.
-- README.MD				this file
-- gpl.txt					GPL v2 license file: it applies to this package
+FOLDER CONTENTS:
+- ImagePyX.py		the main Python module (rev. 0.23), driver for the SSWIMM package
+- SSWIMM		package directory containing the submodules
+- README.MD		this file
+- gpl.txt		GPL v2 license file: it applies to this package
 
 
-TODO
-====
+Look at REVISIONS.TXT for details about developement history and things to do.
 
-- read items to test from DIRENTRY table instead of Offset Table; or
-- resolve conflict between images with the same name?
-- set FLAG_HEADER_RESOURCE_ONLY, FLAG_HEADER_METADATA_ONLY in WIM header
-- investigate around RESHDR_FLAG_FREE
-- compare valid WIM size with xmldata?
-- image exporting
-- sort offset table entries?
-- utility to pretty print XML info/convert times in human readable format
-- change image name/description in XML data
-- merge/read from multiple SWM
-- XML tools to represent path tree?
-- linearize compressed resources logic (blocks first, pointers last)
-- switch to ctypes structures to speedup? [ABORTED]
-- multithreaded decompressor?
-- short names
-- ADS and hard/soft links
-- add security descriptors (may require privileges!)
+
+
+
+
+[*] Developed and tested with Python 2.7.3, 32-bit.

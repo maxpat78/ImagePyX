@@ -1,9 +1,9 @@
 '''
 SWIMMA.PY - Part of Super Simple WIM Manager
-Append module
+Appender module
 '''
 
-VERSION = '0.22'
+VERSION = '0.23'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
@@ -16,6 +16,7 @@ import struct
 import sys
 import tempfile
 import threading
+from collections import OrderedDict
 from ctypes import *
 from datetime import datetime as dt
 from WIMArchive import *
@@ -25,7 +26,7 @@ from SSWIMMD import *
 
 def append(opts, args):
 	srcdir = args[1]
-	RefCounts = {}
+	RefCounts = OrderedDict()
 	
 	StartTime = time.time()
 
@@ -41,13 +42,7 @@ def append(opts, args):
 
 	print "Opening WIM unit for append..."
 
-	COMPRESSION_TYPE = 0
-	if wim.dwFlags & 0x20000:
-		COMPRESSION_TYPE = 1
-	elif wim.dwFlags & 0x40000:
-		COMPRESSION_TYPE = 2
-
-	print "Compression is", ('none', 'XPRESS', 'LZX')[COMPRESSION_TYPE]
+	COMPRESSION_TYPE = get_wim_comp(wim)
 
 	offset_table = get_offsettable(out, wim)
 	images = get_images(out, wim)
@@ -135,4 +130,4 @@ def append(opts, args):
 	
 	finalize_wimheader(wim, out)
 
-	print "Done. %s time elapsed." % (dt.now() - dt.fromtimestamp(StartTime))
+	print_timings(StartTime, StopTime)

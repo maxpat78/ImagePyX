@@ -3,7 +3,7 @@ SWIMMI.PY - Part of Super Simple WIM Manager
 Info module
 '''
 
-VERSION = '0.22'
+VERSION = '0.23'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
@@ -14,22 +14,21 @@ import os
 import sys
 from WIMArchive import *
 from SSWIMMD import *
-from xml.etree import ElementTree as ET
-import pprint
+import uuid
+from xml.dom import minidom
 
 def list(opts, args):
 	fpi = open(args[0], 'rb')
 
 	wim = get_wimheader(fpi)
 
-	COMPRESSION_TYPE = 0
-	if wim.dwFlags & 0x20000:
-		COMPRESSION_TYPE = 1
-	elif wim.dwFlags & 0x40000:
-		COMPRESSION_TYPE = 2
+	COMPRESSION_TYPE = get_wim_comp(wim)
 
 	offset_table = get_offsettable(fpi, wim)
-	
+
+	if len(args) < 2:
+		args += ['1'] # set default argument: first image
+		
 	try:
 		img_index = int(args[1])
 	except ValueError:
@@ -47,14 +46,7 @@ def list(opts, args):
 	img_index -= 1
 	image = images[img_index]
 	
-	metadata_res = get_resource(fpi, image, COMPRESSION_TYPE)
-
-	metadata = tempfile.TemporaryFile()
-	copy(metadata_res, metadata)
-
-	if metadata_res.sha1.digest() != image.bHash:
-		print "FATAL: broken Metadata resource!"
-		sys.exit(1)
+	metadata = get_metadata(fpi, image, COMPRESSION_TYPE)
 
 	direntries, directories = get_direntries(metadata)
 	
@@ -71,17 +63,22 @@ def info(opts, args):
 	print "Opening WIM unit..."
 	wim = get_wimheader(fp)
 
-	COMPRESSION_TYPE = 0
-	if wim.dwFlags & 0x20000:
-		COMPRESSION_TYPE = 1
-	elif wim.dwFlags & 0x40000:
-		COMPRESSION_TYPE = 2
+	COMPRESSION_TYPE = get_wim_comp(wim)
 
-	print "Compression is", ('none', 'XPRESS', 'LZX')[COMPRESSION_TYPE]
+	print """
+WIM Information:
+----------------
+Path:\t\t%s
+GUID:\t\t{%s}
+Image Count:\t%d
+Compression:\t%s
+Part Number:\t%d/%d
+Attributes:\t%X\n""" % (args[0], uuid.UUID(bytes_le=wim.gWIMGuid), wim.dwImageCount,
+('none', 'XPRESS', 'LZX')[COMPRESSION_TYPE],
+wim.usPartNumber, wim.usTotalParts, wim.dwFlags)
 
 	fp.seek(wim.rhXmlData.liOffset)
 
-	xml = ET.parse(fp)
-	pprint.PrettyPrinter().pprint(ET.dump(xml))
-	#~ for i in xml.iter():
-		#~ print i
+	print "Available Image choices:\n------------------------"
+	xml = minidom.parse(fp)
+	print xml.toprettyxml()[23:]

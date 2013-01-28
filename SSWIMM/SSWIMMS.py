@@ -3,7 +3,7 @@ SWIMMS.PY - Part of Super Simple WIM Manager
 Splitter module
 '''
 
-VERSION = '0.22'
+VERSION = '0.23'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
@@ -17,6 +17,7 @@ import sys
 import tempfile
 import threading
 from ctypes import *
+from collections import OrderedDict
 from datetime import datetime as dt
 from WIMArchive import *
 from SSWIMMC import *
@@ -48,7 +49,7 @@ def new_swm(wim, base_name, swm_index):
 
 	
 def split(opts, args):
-	RefCounts = {}
+	RefCounts = OrderedDict()
 	
 	StartTime = time.time()
 
@@ -61,14 +62,9 @@ def split(opts, args):
 	print "Opening WIM unit to split..."
 	wim = get_wimheader(out)
 
-	COMPRESSION_TYPE = 0
-	if wim.dwFlags & 0x20000:
-		COMPRESSION_TYPE = 1
-	elif wim.dwFlags & 0x40000:
-		COMPRESSION_TYPE = 2
+	COMPRESSION_TYPE = get_wim_comp(wim)
 
 	wim.dwFlags |= 0x8 # FLAG_HEADER_SPANNED
-	print "Compression is", ('none', 'XPRESS', 'LZX')[COMPRESSION_TYPE]
 
 	offset_table = get_offsettable(out, wim)
 	images = get_images(out, wim)
@@ -118,7 +114,7 @@ def split(opts, args):
 	# Base SWM only gets all Metadata resource(s)
 	# Others SWM have Fileresources, own Offset table and common XML data
 	swm_index, swm_size, swm = 0, min_swm_unit_expansion + 50*len(images) - 50, None
-	swm_refcounts = {}
+	swm_refcounts = OrderedDict()
 	items.append(None) # trick to force last SWM closing
 	items_to_do = len(items)
 	items_done = [None]
@@ -149,7 +145,7 @@ def split(opts, args):
 				logging.debug("Writing Offset table @0x%08X", wim.rhOffsetTable.liOffset)
 				for e in swm_refcounts:
 					swm.write(make_offsettable(e, swm_refcounts[e], swm_index).tostr())
-				swm_refcounts = {}
+				swm_refcounts = OrderedDict()
 				wim.rhOffsetTable.bFlags = 2 # bFlags as Metadata
 				wim.rhOffsetTable.ullSize = swm.tell() - wim.rhOffsetTable.liOffset
 				wim.rhOffsetTable.liOriginalSize = wim.rhOffsetTable.ullSize
@@ -181,4 +177,4 @@ def split(opts, args):
 	if opts.integrity_check:
 		write_integrity_table(wim, out)
 	
-	print "Done. %s time elapsed." % (dt.now() - dt.fromtimestamp(StartTime))
+	print_timings(StartTime, StopTime)

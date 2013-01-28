@@ -3,7 +3,7 @@ SWIMMD.PY - Part of Super Simple WIM Manager
 Decompressor module
 '''
 
-VERSION = '0.22'
+VERSION = '0.23'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
@@ -18,6 +18,7 @@ import sys
 import time
 import tempfile
 from ctypes import *
+from collections import OrderedDict
 from datetime import datetime as dt
 from xml.etree import ElementTree as ET
 from WIMArchive import *
@@ -65,7 +66,7 @@ def get_xmldata(fp, wim):
 def get_offsettable(fp, wim):
 	"Build a dictionary from the offset table entries, ordered by hash"
 	fp.seek(wim.rhOffsetTable.liOffset)
-	otab = {}
+	otab = OrderedDict()
 	while fp.tell() < wim.rhOffsetTable.liOffset + wim.rhOffsetTable.liOriginalSize:
 		ote = OffsetTableEntry(fp.read(50))
 		otab[ote.bHash] = ote
@@ -99,8 +100,8 @@ def get_direntries(fp):
 	fp.seek(0)
 	sd_size = struct.unpack('<I', fp.read(4))[0]
 	fp.seek(sd_size)
-	direntries = {}
-	directories = {}
+	direntries = OrderedDict()
+	directories = OrderedDict()
 	parent = -1 # parent's offset == key in directories dict
 	while 1:
 		pos = fp.tell()
@@ -175,6 +176,21 @@ def get_image_from_id(wim, fp, id):
 			sys.exit(1)
 	return img_index
 
+def get_metadata(fpi, image, compType):
+	"Returns a stream to the uncompressed Metadata resource"
+	metadata_res = get_resource(fpi, image, compType)
+
+	metadata = tempfile.TemporaryFile()
+	copy(metadata_res, metadata)
+
+	if metadata_res.sha1.digest() != image.bHash:
+		logging.debug("FATAL: broken Metadata resource!")
+		sys.exit(1)
+	else:
+		logging.debug("Metadata checked!")
+	return metadata
+
+
 def extract_test(opts, args, testmode=False):
 	def make_dest(prefix, suffix, check=False):
 		s = os.path.join(prefix, suffix[1:])
@@ -195,13 +211,7 @@ def extract_test(opts, args, testmode=False):
 	print "Opening WIM unit..."
 	wim = get_wimheader(fpi)
 
-	COMPRESSION_TYPE = 0
-	if wim.dwFlags & 0x20000:
-		COMPRESSION_TYPE = 1
-	elif wim.dwFlags & 0x40000:
-		COMPRESSION_TYPE = 2
-
-	print "Compression is", ('none', 'XPRESS', 'LZX')[COMPRESSION_TYPE]
+	COMPRESSION_TYPE = get_wim_comp(wim)
 
 	offset_table = get_offsettable(fpi, wim)
 	
@@ -239,16 +249,7 @@ def extract_test(opts, args, testmode=False):
 			print "Integrity check passed!"
 
 		print "Opening Metadata resource..."
-		metadata_res = get_resource(fpi, image, COMPRESSION_TYPE)
-
-		metadata = tempfile.TemporaryFile()
-		copy(metadata_res, metadata)
-
-		if metadata_res.sha1.digest() != image.bHash:
-			logging.debug("FATAL: broken Metadata resource!")
-			sys.exit(1)
-		else:
-			logging.debug("Metadata checked!")
+		metadata = get_metadata(fpi, image, COMPRESSION_TYPE)
 
 		#~ sd = SecurityData(metadata.read(image.rhOffsetEntry.ullSize))
 		#~ print "Security descriptors:", sd.liEntries
@@ -321,4 +322,4 @@ def extract_test(opts, args, testmode=False):
 
 	StopTime = time.time()
 
-	print "Done. %s time elapsed." % datetime.timedelta(seconds=int(StopTime-StartTime))
+	print_timings(StartTime, StopTime)

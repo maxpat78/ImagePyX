@@ -2,9 +2,10 @@
 
 '''
 WIMArchive.PY - Part of Super Simple WIM Manager
+Common structures and functions
 '''
 
-VERSION = '0.22'
+VERSION = '0.23'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
@@ -57,7 +58,27 @@ def ux2nttime(t):
 def print_progress(start_time, totalBytes, totalBytesToDo):
 	pct_done = 100*float(totalBytes)/float(totalBytesToDo)
 	avg_secs_remaining = (time.time() - start_time) / pct_done * 100 - (time.time() - start_time)
-	sys.stdout.write('%.02f%% done, %s left\r' % (pct_done, datetime.timedelta(seconds=int(avg_secs_remaining))))
+	sys.stdout.write('%.02f%% done, %s left          \r' % (pct_done, datetime.timedelta(seconds=int(avg_secs_remaining))))
+
+def print_timings(start, stop):
+	print "Done. %s time elapsed." % datetime.timedelta(seconds=int(stop-start))
+
+def wim_is_clean(wim, fp):
+	"Ensures there's no garbage after XML data"
+	if wim.dwFlags & 0x40 and wim.rhXmlData.liOffset + wim.rhXmlData.ullSize < os.stat(fp.name):
+		print "A previous WIM updating failed, restoring the original size..."
+		logging.debug("Previous WIM updating failed, restoring the original size (%d bytes)", wim.rhXmlData.liOffset + wim.rhXmlData.ullSize)
+		fp.truncate(wim.rhXmlData.liOffset + wim.rhXmlData.ullSize)
+
+def get_wim_comp(wim):
+	COMPRESSION_TYPE = 0
+	if wim.dwFlags & 0x20000:
+		COMPRESSION_TYPE = 1
+	elif wim.dwFlags & 0x40000:
+		COMPRESSION_TYPE = 2
+	print "Compression is", ('none', 'XPRESS', 'LZX')[COMPRESSION_TYPE]
+	return COMPRESSION_TYPE
+
 
 class XpressHuffCodec:
 	"Performs XPRESS Huffman (de)compression with Windows 8 NTDLL"
@@ -77,14 +98,6 @@ class XpressHuffCodec:
 		# Warning! cbouts (output buffer size) MUST be equal to the expected output size!
 		assert not windll.ntdll.RtlDecompressBufferEx(4, outs, cbouts, ins, cbins, byref(uncomp_len), self.workspace)
 		return uncomp_len.value
-
-def wim_is_clean(wim, fp):
-	"Ensures there's no garbage after XML data"
-	if wim.dwFlags & 0x40 and wim.rhXmlData.liOffset + wim.rhXmlData.ullSize < os.stat(fp.name):
-		print "A previous WIM updating failed, restoring the original size..."
-		logging.debug("Previous WIM updating failed, restoring the original size (%d bytes)", wim.rhXmlData.liOffset + wim.rhXmlData.ullSize)
-		fp.truncate(wim.rhXmlData.liOffset + wim.rhXmlData.ullSize)
-
 		
 class BadWim(Exception):
 	pass
