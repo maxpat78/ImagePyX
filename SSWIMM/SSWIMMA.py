@@ -3,7 +3,7 @@ SWIMMA.PY - Part of Super Simple WIM Manager
 Appender module
 '''
 
-VERSION = '0.23'
+VERSION = '0.24'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
@@ -25,12 +25,12 @@ from SSWIMMD import *
 
 
 def append(opts, args):
-	srcdir = args[1]
+	srcdir = args[0]
 	RefCounts = OrderedDict()
 	
 	StartTime = time.time()
 
-	out = open(args[0], 'r+b')
+	out = open(args[1], 'r+b')
 	out.seek(0)
 	
 	wim = get_wimheader(out)
@@ -51,9 +51,11 @@ def append(opts, args):
 		if o.rhOffsetEntry.bFlags & 2: # skips image resource
 			continue
 		RefCounts[o.bHash] = (o.rhOffsetEntry.liOffset, o.rhOffsetEntry.liOriginalSize, o.rhOffsetEntry.ullSize, o.dwRefCount, o.rhOffsetEntry.bFlags)
-		
+
+	security = make_securityblock()
+
 	print "Collecting new files..."
-	direntries_size, entries, subdirs, total_input_bytes = make_direntries(srcdir, opts.exclude_list)
+	direntries_size, entries, subdirs, total_input_bytes = make_direntries(srcdir, security, opts.exclude_list)
 
 	# Flags the header for writing in progress
 	wim.dwFlags |= 0x40
@@ -64,8 +66,10 @@ def append(opts, args):
 	
 	print "Packing contents..."
 	totalBytes, RefCounts = make_fileresources(out, COMPRESSION_TYPE, entries, RefCounts, total_input_bytes, StartTime)
-	
-	metadata_size = direntries_size # in fact should be: security_size + direntries_size
+
+	sd_raw = security.tostr()
+
+	metadata_size = len(sd_raw) + direntries_size
 	
 	image_start = out.tell()
 	logging.debug("Image start @%08X", image_start)
@@ -73,7 +77,7 @@ def append(opts, args):
 	meta = tempfile.TemporaryFile()
 	cout = OutputStream(meta, metadata_size, COMPRESSION_TYPE)
 
-	cout.write(make_securityblock().tostr())
+	cout.write(sd_raw)
 
 	dirCount, fileCount = write_direntries(cout, entries, subdirs, srcdir)
 

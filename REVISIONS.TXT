@@ -13,9 +13,9 @@ FEB 2012	Planning the WIM archive classes
 		Many bugs fixed: can handle well thousands of files
 23.09.12 r.0.04	halfed SHA-1 calculations
 		simpler reference counting
-		store always when comp == uncomp size
-		store uncompressed chunks when cheaper
-		use Python Unicode for scanning dirs
+		stores always when comp == uncomp size
+		stores uncompressed chunks when cheaper
+		uses Python Unicode for scanning dirs
 24.09.12 r.0.05 made the input stream w/ temp file (like ImageX)
 		testing capabilities
 25.09.12 r.0.06 fixed bugs in the InputStream read lengths
@@ -25,7 +25,7 @@ FEB 2012	Planning the WIM archive classes
 		reorganized code in SSWIMMD
 		timings
 05.10.12 r.0.09 InputStream now correctly detects if the last chunk is uncompressed
-		report duplicates discarded in debug info
+		reports duplicates discarded in debug info
 06.10.12 r.0.10 working (and faster: 33%) compressor multithreaded version
 		slightly improved with a 3rd thread
 		additional 15% speedup by reorganizing code in make_fileresources
@@ -35,7 +35,7 @@ FEB 2012	Planning the WIM archive classes
 		minor optimizations in OutputStream.__write_comp
 		better reports decompressor errors in debugging log
 09.10.12 r.0.12	cStringIO instead of str in OutputStream: but no speedup
-		take SHA-1 AOT trying to save compressor work, at a cost of reading input twice
+		takes SHA-1 AOT trying to save compressor work, at a cost of reading input twice
 		(20% faster on a fresh XP installation -dllcache-)
 11.10.12 r.0.13	integrity table creation & verification
 13.10.12 r.0.14 can append new images
@@ -47,43 +47,52 @@ FEB 2012	Planning the WIM archive classes
 		cmd line unified in SSWIMM main module
 		can update images
 		can list image contents
-		set correct dwFlags in WIM header
+		sets correct dwFlags in WIM header
 22.10.12 r.0.16	fixed a bug with nesting excluded directory
 		added description XML field
 		better split algorithm to reach optimal unit fit
-		access images by name
+		access to images by name
 23.10.12 r.0.17	update correctly decreases dwRefCount for discarded files
 		update merges again common file resources
 		correctly extends/updates offset table when appending/updating an identical image
-		always update TOTALBYTES field in XmlData
+		always updates TOTALBYTES field in XmlData
 		can delete images
-		keep IMAGE entries sorted by INDEX in XmlData (prevents 7-zip warnings)
+		keeps IMAGE entries sorted by INDEX in XmlData (prevents 7-zip warnings)
 		can read exclusion list from file
 24.10.12 r.0.20	reorganized code in SSWIMM package with ImagePyX driver :)
 17.01.13 r.0.21 added progress indicator (% done and time)
 22.01.13 r.0.22 can extract images
 		unified progress indicator
-		use NTDLL codecs when available (Windows 8)
+		uses NTDLL codecs when available (Windows 8)
 		fixed RTL Xpress Huffman decompressor
 		can exclude files during extraction
-		skip items not belonging to the selected image
+		skips items not belonging to the selected image
 		minimized RTL codec workspace reallocations
-		restore times/attributes (except last access) on extracted files
+		restores times/attributes (except creation time) on extracted files
 26.01.13 r.0.23 can export an image to a new WIM
 		unified code for Metadata access and timing reports
 		fixed a bug in dwRefCount when updating/deleting an image
 		changed some command names in ImagePyX to resemble ImageX
 		beautified info output (thanks to minidom)
 		replaced dict() with OrderedDict() to speedup some operations
-		correctly decrease dwImageCount when deleting an Image
-
+		correctly decreases dwImageCount when deleting an Image
+05.02.13 r.0.24 can handle security attributes
+		fixed QWORD alignment of Security Data block
+		can restore all time and security descriptors on Windows
+		correctly restores duplicated file resources by copying them
+		can record short 8+3 file names (Windows)
+		correctly lists each duplicated file resource
+		can export one or all images to a new or old WIM
 
 TODO
 ====
-- multiple images export
 - change image name/description in XML data with --info
 - optimization/cleanup of unused resources in an updated WIM
+- multithreaded decompressor?
+- codec: parallelize blocks instead of files?
+- ADS and hard/soft links
 - merge/read from multiple SWM
+- export with resource recompression
 - resolve conflict between images with the same name?
 - set FLAG_HEADER_RESOURCE_ONLY, FLAG_HEADER_METADATA_ONLY in WIM header
 - investigate around RESHDR_FLAG_FREE
@@ -91,7 +100,3 @@ TODO
 - XML tools to represent path tree?
 - linearize compressed resources logic (blocks first, pointers last)
 - switch to ctypes structures to speedup? [ABORTED]
-- multithreaded decompressor?
-- short names
-- ADS and hard/soft links
-- add security descriptors (may require privileges!)

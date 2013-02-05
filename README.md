@@ -10,9 +10,11 @@ With ImagePyX you can:
 - append new images to a WIM
 - apply (extract) an image from WIM unit to a directory, optionally excluding files/folders
 - split a WIM into more SWM units
-- export an image to a new WIM
+- export one or all images to an old/new WIM
 - list and test image contents
 
+On Windows, it can handle short names, security permissions and use native RTL codec (8 only); but it lacks
+ADS and hard/soft links.
 
 Useful links about WIM Images:
 	http://en.wikipedia.org/wiki/Windows_Imaging_Format

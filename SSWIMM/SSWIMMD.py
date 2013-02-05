@@ -3,7 +3,7 @@ SWIMMD.PY - Part of Super Simple WIM Manager
 Decompressor module
 '''
 
-VERSION = '0.23'
+VERSION = '0.24'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
@@ -13,6 +13,7 @@ import hashlib
 import logging
 import optparse
 import os
+import shutil
 import struct
 import sys
 import time
@@ -95,6 +96,23 @@ def get_resource(fp, ote, defaultcomp=0):
 		res_comp = defaultcomp
 	return InputStream(fp, ote.rhOffsetEntry.liOriginalSize, ote.rhOffsetEntry.ullSize, res_comp)
 
+def get_securitydata(fp):
+	"Build the SecurityData hash table"
+	sd = SecurityData(255*'\0')
+	fp.seek(0)
+	sd_size = struct.unpack('<I', fp.read(4))[0]
+	sd_nument = struct.unpack('<I', fp.read(4))[0]
+	sd_ent = []
+	for i in range(sd_nument):
+		sd_ent += [struct.unpack('<Q', fp.read(8))[0]]
+	for i in sd_ent:
+		s = fp.read(i)
+		if windll.advapi32.IsValidSecurityDescriptor(s):
+			sd.SDS[hashlib.sha1(s).digest()] = create_string_buffer(s)
+			logging.debug("Retrieved valid SD with index #%d", len(sd.SDS)-1)
+			#~ open('SD#%d.bin'%(len(sd.SDS)-1),'wb').write(s)
+	return sd
+	
 def get_direntries(fp):
 	"Build the DIRENTRY table and reconstructs the original tree"
 	fp.seek(0)
@@ -105,6 +123,7 @@ def get_direntries(fp):
 	parent = -1 # parent's offset == key in directories dict
 	while 1:
 		pos = fp.tell()
+		assert not (pos % 8)
 		if pos in directories: parent = pos
 		s = fp.read(8)
 		if not s: break
@@ -251,14 +270,13 @@ def extract_test(opts, args, testmode=False):
 		print "Opening Metadata resource..."
 		metadata = get_metadata(fpi, image, COMPRESSION_TYPE)
 
-		#~ sd = SecurityData(metadata.read(image.rhOffsetEntry.ullSize))
-		#~ print "Security descriptors:", sd.liEntries
+		security = get_securitydata(metadata)
 
 		print "Collecting DIRENTRY table..."
 		direntries, directories = get_direntries(metadata)
 
 		badfiles = 0
-		total_restored_files = 1
+		total_restored_files = 0
 		totalOutputBytes, totalBytes = 0, 0
 		for ote in offset_table.values():
 			totalOutputBytes +=ote.rhOffsetEntry.liOriginalSize
@@ -273,32 +291,37 @@ def extract_test(opts, args, testmode=False):
 			# Skip Images
 			if ote.rhOffsetEntry.bFlags & 2: continue
 			file_res = get_resource(fpi, ote, COMPRESSION_TYPE)
-			if ote.bHash in direntries:
-				fname = direntries[ote.bHash][0].FileName
-			else:
-				fname = '[Unnamed entry]'
-				if not testmode:
-					# Skips unnamed entry, not belonging to processed image
-					continue
-			if ote.bHash in direntries and direntries[ote.bHash][0]._parent in directories:
-				fname = os.path.join(directories[direntries[ote.bHash][0]._parent],fname)
-			else:
-				fname = '[Unnamed entry]'
+
+			if ote.bHash not in direntries:
+				continue # Skips unnamed entry, not belonging to processed image
 				
 			if not testmode:
-				if not opts.exclude_list or not is_excluded(fname, opts.exclude_list):
-					dst = make_dest(args[2], fname)
-					copy(file_res, dst)
-					dst.close()
-					os.utime(dst.name, (direntries[ote.bHash][0].liLastAccessTime/10000000 - 11644473600, direntries[ote.bHash][0].liLastWriteTime/10000000 - 11644473600))
-					if sys.platform in ('win32', 'cygwin'):
-						windll.kernel32.SetFileAttributesW(dst.name, direntries[ote.bHash][0].dwAttributes)
-					total_restored_files += 1
-				else:
-					totalBytes += ote.rhOffsetEntry.liOriginalSize
-					continue
+				expanded_source = ''
+				for fres in direntries[ote.bHash]:
+					fname = os.path.join(directories[fres._parent], fres.FileName)
+					if not opts.exclude_list or not is_excluded(fname, opts.exclude_list):
+						# Expand the resource the first time, the duplicates it
+						if expanded_source:
+							dst = make_dest(args[2], fname)
+							dst.close()
+							shutil.copy(expanded_source, dst.name)
+							logging.debug("Duplicate File resource: copied '%s' to '%s'", expanded_source, dst.name)
+						else:
+							dst = make_dest(args[2], fname)
+							copy(file_res, dst)
+							dst.close()
+							expanded_source = dst.name
+						touch(dst.name, fres.liLastWriteTime, fres.liCreationTime, fres.liLastAccessTime)
+						if sys.platform in ('win32', 'cygwin'):
+							windll.kernel32.SetFileAttributesW(dst.name, fres.dwAttributes)
+							security.apply(fres.dwSecurityId, dst.name)
+						total_restored_files += 1
+					else:
+						totalBytes += ote.rhOffsetEntry.liOriginalSize
+						continue
 			else:
 				copy(file_res, None)
+				fname = direntries[ote.bHash][0].FileName
 				
 			totalBytes += ote.rhOffsetEntry.liOriginalSize
 			print_progress(StartTime, totalBytes, totalOutputBytes)			
@@ -313,10 +336,7 @@ def extract_test(opts, args, testmode=False):
 			print "%d/%d corrupted files detected." % (badfiles,len(direntries))
 		else:
 			if not testmode:
-				if total_restored_files == len(direntries):
-					print "Successfully restored %d files."%len(direntries)
-				else:
-					print "Successfully restored %d files (%d excluded)." % (total_restored_files, len(direntries)-total_restored_files)
+				print "Successfully restored %d files."%total_restored_files
 			else:
 				print "All File resources (%d) are OK!"%len(direntries)
 

@@ -3,7 +3,7 @@ SWIMMU.PY - Part of Super Simple WIM Manager
 Updater module
 '''
 
-VERSION = '0.23'
+VERSION = '0.24'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
@@ -24,12 +24,16 @@ from SSWIMMC import *
 from SSWIMMD import *
 
 def update(opts, args):
-	srcdir = args[1]
+	srcdir = args[0]
+	if not os.path.exists(srcdir):
+		print "Source folder does not exist!"
+		sys.exit(1)
+		
 	RefCounts = OrderedDict()
 	
 	StartTime = time.time()
 
-	out = open(args[0], 'r+b')
+	out = open(args[1], 'r+b')
 	out.seek(0)
 	
 	wim = get_wimheader(out)
@@ -67,9 +71,11 @@ def update(opts, args):
 		if e in RefCounts:
 			RefCounts[e][3] = RefCounts[e][3] - len(direntries[e]) # decrease dwRefCount by amount referred to this image
 
+	security = make_securityblock()
+
 	# Collects input files
 	print "Collecting new files..."
-	direntries_size, entries, subdirs, total_input_bytes = make_direntries(srcdir, opts.exclude_list)
+	direntries_size, entries, subdirs, total_input_bytes = make_direntries(srcdir, security, opts.exclude_list)
 
 	# Flags the header for writing in progress
 	wim.dwFlags |= 0x40
@@ -81,7 +87,9 @@ def update(opts, args):
 	print "Packing contents..."
 	totalBytes, RefCounts = make_fileresources(out, COMPRESSION_TYPE, entries, RefCounts, total_input_bytes, StartTime)
 
-	metadata_size = direntries_size # in fact should be: security_size + direntries_size
+	sd_raw = security.tostr()
+
+	metadata_size = len(sd_raw) + direntries_size
 	
 	image_start = out.tell()
 	logging.debug("Image start @%08X", image_start)
@@ -89,7 +97,7 @@ def update(opts, args):
 	meta = tempfile.TemporaryFile()
 	cout = OutputStream(meta, metadata_size, COMPRESSION_TYPE)
 
-	cout.write(make_securityblock().tostr())
+	cout.write(security.tostr())
 
 	dirCount, fileCount = write_direntries(cout, entries, subdirs, srcdir)
 
@@ -162,13 +170,7 @@ def delete(opts, args):
 		print "WIM header has READ-ONLY flag set, aborting delete..."
 		sys.exit(1)
 		
-	COMPRESSION_TYPE = 0
-	if wim.dwFlags & 0x20000:
-		COMPRESSION_TYPE = 1
-	elif wim.dwFlags & 0x40000:
-		COMPRESSION_TYPE = 2
-
-	print "Compression is", ('none', 'XPRESS', 'LZX')[COMPRESSION_TYPE]
+	COMPRESSION_TYPE = get_wim_comp(wim)
 
 	offset_table = get_offsettable(out, wim)
 	images = get_images(out, wim)

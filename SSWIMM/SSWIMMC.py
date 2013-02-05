@@ -3,7 +3,7 @@ SSWIMMC.PY - Super Simple WIM Manager
 Creator module - Multithreaded version
 '''
 
-VERSION = '0.23'
+VERSION = '0.24'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
@@ -56,12 +56,11 @@ def make_wimheader(compress=1):
 	wim.ImageTag = 'MSWIM\0\0\0'
 	wim.cbSize = 0xD0
 	wim.dwVersion = 0x00010D00 # 1.13
+	wim.dwCompressionSize = 0x8000
 	if compress == 1:
 		wim.dwFlags = 2 | 0x20000 # XPRESS compressed
-		wim.dwCompressionSize = 0x8000
 	elif compress == 2:
 		wim.dwFlags = 2 | 0x40000 # LZX compressed
-		wim.dwCompressionSize = 0x8000
 	else:
 		wim.dwFlags = 0 # Uncompressed
 		wim.dwCompressionSize = 0
@@ -77,7 +76,7 @@ def make_wimheader(compress=1):
 	wim.bUnused = 60*'\0'
 	return wim
 
-def make_direntry(pathname, isroot=0):
+def make_direntry(pathname, security, isroot=0):
 	e = DirEntry(255*'\0')
 	if len(pathname) < 255:
 		st = os.stat(pathname)
@@ -89,27 +88,32 @@ def make_direntry(pathname, isroot=0):
 		if e.dwAttributes == -1:
 			logging.debug("GetFileAttributesW returned -1 on %s", pathname)
 			e.dwAttributes = 0x20
-		#~ short_pathname = create_string_buffer(len(pathname)*2+2)
-		#~ print windll.kernel32.GetShortPathNameW(pathname, short_pathname, 2*len(pathname)+2)
-		#~ print short_pathname.raw
+	e.dwSecurityId = security.addobject(pathname)
 	if os.path.isfile(pathname):
 		e.dwAttributes = 0x20
 	else:
 		e.dwAttributes |= 0x10
 		if isroot: pathname = ''
 	e.SrcPathname = pathname
-	e.dwSecurityId = -1
 	e.liCreationTime = ux2nttime(st.st_ctime)
 	e.liLastWriteTime = ux2nttime(st.st_mtime)
 	e.liLastAccessTime = ux2nttime(st.st_atime)
 	base = os.path.basename(pathname)
 	e.wFileNameLength = len(base) * 2
 	e.FileName = base.encode('utf-16le')
-	if e.wFileNameLength:
-		addendum = 8
-	else:
-		addendum = 6
-	e.liLength = (0x66+e.wFileNameLength+addendum) & -7
+	if sys.platform in ('win32', 'cygwin'):
+		short_pathname = create_string_buffer(len(pathname)*2+2)
+		i = windll.kernel32.GetShortPathNameW(pathname, short_pathname, 2*len(pathname)+2)
+		u_short_pathname = short_pathname.raw.decode('utf-16le')[:i]
+		short_base = os.path.basename(u_short_pathname)
+		if base != short_base:
+			e.wShortNameLength = len(short_base)*2
+			e.ShortFileName = short_base.encode('utf-16le')
+	e.liLength = 0x66 + e.wFileNameLength + e.wShortNameLength
+	# Sum virtual ending NULL
+	if e.wFileNameLength: e.liLength += 2
+	if e.wShortNameLength: e.liLength += 2
+	e.liLength += (8 - (e.liLength%8) & 7) # QWORD padding
 	e.bHash = 0
 	return e
 
@@ -119,7 +123,7 @@ def make_securityblock():
 	e.dwNumEntries = 0
 	return e
 
-def make_direntries(directory, excludes=None):
+def make_direntries(directory, security, excludes=None):
 	def is_excluded(s, excludes):
 		i_pname = s[s.find('\\'):] # pathname how it will be inside the image
 		# if the excluded item is a dir, we want subcontents excluded also! (x+\*)
@@ -129,7 +133,7 @@ def make_direntries(directory, excludes=None):
 	total_input_bytes = 0
 
 	# root DIRENTRY offset relative to Metadata resource start
-	pos = 8 # relative offset of the next subdir content
+	pos = 0 # relative offset of the next subdir content
 	subdirs = OrderedDict() # {parent folder: childs offset}
 	for root, dirs, files in os.walk(directory):
 		logging.debug("root is now %s", root)
@@ -137,7 +141,7 @@ def make_direntries(directory, excludes=None):
 			logging.debug("Excluded root %s", root)
 			continue
 		if root == directory:
-			direntries += [make_direntry(root,1)]
+			direntries += [make_direntry(root,security,1)]
 			logging.debug("Made Root DIRENTRY %s", root)
 			direntries += [DirEntry(255*'\0')] # a null QWORD marks the end of folder
 			pos += direntries[-2].liLength + 8
@@ -151,7 +155,7 @@ def make_direntries(directory, excludes=None):
 				continue
 			if len(item) > 255 and '\\\\?\\' not in pname:
 				pname = '\\\\?\\' + os.path.abspath(pname) # access pathnames > 255
-			direntries += [make_direntry(pname)]
+			direntries += [make_direntry(pname, security)]
 			pos += direntries[-1].liLength
 			total_input_bytes += direntries[-1].FileSize
 			logging.debug("Made File DIRENTRY %s", pname)
@@ -164,7 +168,7 @@ def make_direntries(directory, excludes=None):
 				continue
 			if len(item) > 255 and '\\\\?\\' not in pname:
 				pname = '\\\\?\\' + os.path.abspath(pname) # access pathnames > 255
-			direntries += [make_direntry(pname)]
+			direntries += [make_direntry(pname,security)]
 			logging.debug("Made Folder DIRENTRY %s", item)
 			pos += direntries[-1].liLength
 			total_input_bytes += direntries[-1].FileSize
@@ -173,6 +177,8 @@ def make_direntries(directory, excludes=None):
 		direntries += [DirEntry(255*'\0')]
 		pos += 8
 		logging.debug("Made NULL QWORD (end of folder)")
+	for it in subdirs:
+		subdirs[it] += security.length() # fix final offset relative to Security Data object
 	return pos, direntries, subdirs, total_input_bytes
 
 def compressor_thread(q, refcounts):
@@ -379,9 +385,9 @@ def finalize_wimheader(wim, fp):
 	
 	
 def create(opts, args):
-	out = open(args[0], 'w+b')
+	out = open(args[1], 'w+b')
 	COMPRESSION_TYPE = {'none':0, 'xpress':1, 'lzx':2}[opts.compression_type.lower()]
-	srcdir = args[1]
+	srcdir = args[0]
 	
 	# 1 - WIM Header
 	wim = make_wimheader(COMPRESSION_TYPE)
@@ -389,16 +395,20 @@ def create(opts, args):
 
 	StartTime = time.time()
 
+	security = make_securityblock()
+
 	# Collects input files
 	print "Collecting files..."
-	direntries_size, entries, subdirs, total_input_bytes = make_direntries(srcdir, opts.exclude_list)
+	direntries_size, entries, subdirs, total_input_bytes = make_direntries(srcdir, security, opts.exclude_list)
 	
 	# 2 - File contents
 	print "Packing contents..."
 	RefCounts = OrderedDict() # {sha-1: (offset, size, csize, count, flags)}
 	imgTotalBytes, RefCounts = make_fileresources(out, COMPRESSION_TYPE, entries, RefCounts, total_input_bytes, StartTime)
 	
-	metadata_size = direntries_size # in fact should be: security_size + direntries_size
+	sd_raw = security.tostr()
+
+	metadata_size = len(sd_raw) + direntries_size
 		
 	# 3 - Image Metadata
 	image_start = out.tell()
@@ -407,8 +417,8 @@ def create(opts, args):
 	meta = tempfile.TemporaryFile()
 	cout = OutputStream(meta, metadata_size, COMPRESSION_TYPE)
 
-	# 3.1 - Security block (empty)
-	cout.write(make_securityblock().tostr())
+	# 3.1 - Security block
+	cout.write(sd_raw)
 
 	dirCount, fileCount = write_direntries(cout, entries, subdirs, srcdir)
 	

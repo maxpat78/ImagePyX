@@ -5,7 +5,7 @@ WIMArchive.PY - Part of Super Simple WIM Manager
 Common structures and functions
 '''
 
-VERSION = '0.23'
+VERSION = '0.24'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
@@ -20,12 +20,13 @@ import sys
 import tempfile
 import time
 import uuid
+from collections import OrderedDict
 from ctypes import *
 from cStringIO import StringIO
 
 # Helper functions
 def class2str(c, s):
-	"Enumera in tabella nomi e valori dal layout di una classe"
+	"Makes a table from keys:values in a class layout"
 	keys = c._kv.keys()
 	keys.sort()
 	for key in keys:
@@ -37,7 +38,7 @@ def class2str(c, s):
 	return s
 
 def common_getattr(c, name):
-	"Decodifica e salva un attributo in base al layout di classe"
+	"Decodes and stores an attribute according to the class layout"
 	i = c._vk[name]
 	fmt = c._kv[i][1]
 	cnt = struct.unpack_from(fmt, c._buf, i+c._i) [0]
@@ -45,17 +46,38 @@ def common_getattr(c, name):
 	return cnt
 
 def nt2uxtime(t):
-	"Converte data e ora dal formato NT a Python (Unix)"
-	# NT: lassi di 100 nanosecondi dalla mezzonotte dell'1/1/1601
-	# Unix: secondi dall' 1/1/1970
-	# La differenza è di 134774 giorni o 11.644.473.600 secondi
+	"Converts date/time from NT to Python format (Unix)"
+	# NT: 100 nanoseconds intervals since midnight of 1/1/1601
+	# Unix: seconds since 1/1/1970
+	# Diff is 134.774 days or 11.644.473.600 seconds
 	return datetime.datetime.utcfromtimestamp(t/10000000 - 11644473600)
 
+def nt2uxtime(t):
+	"Converts date/time from NT into Unix"
+	return t/10000000 - 11644473600
+
 def ux2nttime(t):
-	"Converte data e ora dal formato Python (Unix) a NT"
+	"Converts date/time from Unix into NT"
 	return int((t+11644473600L)*10000000L)
 
+def touch(pathname, WTime, CTime, ATime):
+	if sys.platform not in ('win32', 'cygwin'):
+		os.utime(pathname, (nt2uxtime(ATime), nt2uxtime(WTime)))
+		return
+	hFile = windll.kernel32.CreateFileW(pathname, 0x0100, 0, 0, 3, 0x02000000, 0)
+	if hFile == -1:
+		logging.debug("Can't open '%s' to touch it!", pathname)
+		return
+	CTime = c_ulonglong(CTime)
+	ATime = c_ulonglong(ATime)
+	WTime = c_ulonglong(WTime)
+	if not windll.kernel32.SetFileTime(hFile, byref(CTime), byref(ATime), byref(WTime)):
+		logging.debug("Can't apply datetimes to '%s'!", pathname)
+		return
+	windll.kernel32.CloseHandle(hFile)
+
 def print_progress(start_time, totalBytes, totalBytesToDo):
+	"Prints a progress string"
 	pct_done = 100*float(totalBytes)/float(totalBytesToDo)
 	avg_secs_remaining = (time.time() - start_time) / pct_done * 100 - (time.time() - start_time)
 	sys.stdout.write('%.02f%% done, %s left          \r' % (pct_done, datetime.timedelta(seconds=int(avg_secs_remaining))))
@@ -166,13 +188,14 @@ class WIMHeader:
 
 
 class SecurityData:
-	"Security descriptors associated to file resources. We provide an empty one."
+	"Security descriptors associated to file resources."
 	layout = {
 	0x00: ('dwTotalLength', '<I'), # length of the SD resource
 	0x04: ('dwNumEntries', '<I'), # Array of QWORDs with variable-length security descriptors follows
 	}
 
 	def __init__(self, s):
+		self.SDS = OrderedDict() # Security Descriptors dictionary {hash: SD}
 		self._i = 0 # posizione nel buffer
 		self._pos = 0 # posizione nel buffer
 		self._buf = s
@@ -180,14 +203,8 @@ class SecurityData:
 		self._vk = {} # { nome: offset}
 		for k, v in self._kv.items():
 			self._vk[v[0]] = k
+		self.dwTotalLength = 8 # initial size (empty object)
 		self.size = self.dwTotalLength
-		self.liEntries = []
-		if self.dwNumEntries:
-			for i in range(self.dwNumEntries):
-				sd_size = struct.unpack('<Q', s[8+i*8:16+i*8])
-				self.liEntries += [sd_size]
-			for i in range(len(self.liEntries)):
-				self.liEntries[i] = s[8+self.dwNumEntries*8]
 		
 	__getattr__ = common_getattr
 	
@@ -196,20 +213,68 @@ class SecurityData:
 
 	def tostr (self):
 		s = ''
+		# Make the SDs lenghts table (QWORD)
+		for sd in self.SDS:
+			s += struct.pack('<Q', len(self.SDS[sd]))
+		# Add the SDs themselves
+		for sd in self.SDS:
+			s += self.SDS[sd].raw
+		pad = 8 - (len(s)%8) & 7
+		s += (pad*'\0') # align to QWORD
+		self.dwTotalLength = 8 + len(s)
+		self.dwNumEntries = len(self.SDS)
+		s1 = ''
 		keys = self._kv.keys()
 		keys.sort()
 		for k in keys:
 			v = self._kv[k]
-			s += struct.pack(v[1], getattr(self, v[0]))
-		return s
+			s1 += struct.pack(v[1], getattr(self, v[0]))
+		return s1+s
 
-	
+	def addobject(self, pathname):
+		"Adds a single instance of an object's SD into a table, returning its index"
+		if sys.platform not in ('win32', 'cygwin'):
+			return -1
+		lpLenNeeded = c_int()
+		# OWNER_SECURITY_INFORMATION=1 GROUP_SECURITY_INFORMATION=2 DACL_SECURITY_INFORMATION=4
+		windll.advapi32.GetFileSecurityW(pathname, 7, None, None, byref(lpLenNeeded))
+		s = create_string_buffer(lpLenNeeded.value)
+		ret = windll.advapi32.GetFileSecurityW(pathname, 7, s, lpLenNeeded.value, byref(lpLenNeeded))
+		ind = -1
+		if ret and windll.advapi32.IsValidSecurityDescriptor(s):
+			sha1 = hashlib.sha1(s).digest()
+			if sha1 in self.SDS:
+				ind = self.SDS.keys().index(sha1)
+				logging.debug("SD already indexed as #%d", ind)
+			else:
+				self.SDS[sha1] = s
+				ind = len(self.SDS) - 1
+				logging.debug("Added new SD with index #%d", ind)
+				self.dwTotalLength += 8 + len(s)
+		else:
+			logging.debug("GetFileSecurityW failed on '%s'", pathname)
+		return ind
+
+	def apply(self, index, pathname):
+		"Applies a SD to an object"
+		if sys.platform not in ('win32', 'cygwin'):
+			return
+		if index > -1 and index < len(self.SDS):
+			sd = self.SDS.keys()[index]
+			if not windll.advapi32.SetFileSecurityW(pathname, 7, self.SDS[sd]):
+				logging.debug("Error restoring SD on '%s'", pathname)
+
+	def length(self):
+		pad = 8 - (self.dwTotalLength%8) & 7
+		return self.dwTotalLength + pad # QWORD aligned size
+
+
 class DirEntry:
 	"Represents a file or folder captured inside an image"
 	layout = { # 0x66 bytes
 	0x00: ('liLength', '<Q'), # Length of this DIRENTRY
 	0x08: ('dwAttributes', '<I'), # DOS file attributes (0x20=DIR)
-	0x0C: ('dwSecurityId', '<i'), # Security Descriptor (-1 if not used)
+	0x0C: ('dwSecurityId', '<i'), # Security Descriptor (-1 if not used) index
 	0x10: ('liSubdirOffset', '<Q'), # Offset of folder's childs inside the Metadata resource, or 0 if it is a file. Empty folder points to the end NULL.
 	0x18: ('liUnused1', '<Q'),
 	0x20: ('liUnused2', '<Q'),
@@ -254,6 +319,8 @@ class DirEntry:
 			v = self._kv[k]
 			s += struct.pack(v[1], getattr(self, v[0]))
 		s += self.FileName
+		if hasattr(self, 'ShortFileName'):
+			s += '\0\0' + self.ShortFileName
 		return s + (self.liLength-len(s))*'\0'
 
 
@@ -332,7 +399,7 @@ class OffsetTableEntry:
 
 
 class IntegrityTable:
-	"Optional inegrity table"
+	"Optional integrity table"
 	layout = {
 	0x00: ('cbSize', '<I'), # length of the table
 	0x04: ('dwNumElements', '<I'), # Chunks number
@@ -340,11 +407,11 @@ class IntegrityTable:
 	}
 
 	def __init__(self, s):
-		self._i = 0 # posizione nel buffer
-		self._pos = 0 # posizione nel buffer
+		self._i = 0
+		self._pos = 0
 		self._buf = s
 		self._kv = IntegrityTable.layout.copy()
-		self._vk = {} # { nome: offset}
+		self._vk = {}
 		self.Entries = [] # SHA-1 chunk hashes
 		for k, v in self._kv.items():
 			self._vk[v[0]] = k
@@ -450,7 +517,6 @@ class InputStream:
 				try:
 					# Rtl decompressor requires a buffer size equal to the requested output size!
 					cbo = self.decompress(self._ibuf, cb, self._obuf, (32768, residual_uncompressed_bytes)[residual_uncompressed_bytes < 32768])
-					#~ cbo = self.decompress(self._ibuf, cb, self._obuf, 32768*4)
 				except:
 					cbo = -1
 					logging.debug("FATAL: decompressor exception!")

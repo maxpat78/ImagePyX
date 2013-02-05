@@ -3,7 +3,7 @@ SWIMMI.PY - Part of Super Simple WIM Manager
 Info module
 '''
 
-VERSION = '0.23'
+VERSION = '0.24'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
@@ -51,10 +51,10 @@ def list(opts, args):
 	direntries, directories = get_direntries(metadata)
 	
 	for k in direntries:
-		fname = direntries[k][0].FileName
-		if not fname: continue
-		fname = os.path.join(directories[direntries[k][0]._parent], fname)
-		print fname
+		for fres in direntries[k]:
+			if fres._parent == -1: continue # skips ROOT
+			fname = os.path.join(directories[fres._parent], fres.FileName)
+			print fname
 
 
 def info(opts, args):
