@@ -5,7 +5,7 @@ WIMArchive.PY - Part of Super Simple WIM Manager
 Common structures and functions
 '''
 
-VERSION = '0.24'
+VERSION = '0.25'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
@@ -75,6 +75,122 @@ def touch(pathname, WTime, CTime, ATime):
 		logging.debug("Can't apply datetimes to '%s'!", pathname)
 		return
 	windll.kernel32.CloseHandle(hFile)
+
+def IsReparsePoint(pathname):
+    "Test if the object is a symbolic link or a junction point"
+    if sys.platform not in ('win32', 'cygwin') or not pathname:
+        return False
+    return windll.kernel32.GetFileAttributesW(pathname) & 0x400 # FILE_ATTRIBUTE_REPARSE_POINT
+
+class WIN32_FIND_STREAM_DATA(Structure):
+	_fields_ = [("StreamSize", c_longlong), ("cStreamName", c_wchar*296)]
+
+class WIN32_FIND_DATA(Structure):
+	_pack_ = 1
+	_fields_ = [("dwFileAttributes", c_uint), ("ftCreationTime", c_ulonglong), ("ftLastAccessTime", c_ulonglong),
+	("ftLastWriteTime", c_ulonglong), ("dwnFileSizeHigh", c_uint), ("dwnFileSizeLow", c_uint), ("dwReserved0", c_uint),
+	("dwReserved1", c_uint), ("cFileName", c_wchar*260), ("cAlternateFileName", c_wchar*14)]
+
+class BY_HANDLE_FILE_INFORMATION(Structure):
+	_pack_ = 1
+	_fields_ = [("dwFileAttributes", c_uint), ("ftCreationTime", c_ulonglong), ("ftLastAccessTime", c_ulonglong),
+	("ftLastWriteTime", c_ulonglong), ("dwVolumeSerialNumber", c_uint), ("nFileSizeHigh", c_uint), ("nFileSizeLow", c_uint),
+	("nNumberOfLinks", c_uint), ("nFileIndexHigh", c_uint), ("nFileIndexLow", c_uint)]
+
+def IsHardlinkedFile(pathname):
+    "Test if a file has hard links"
+    if sys.platform not in ('win32', 'cygwin'):
+        return False
+    hFile = windll.kernel32.CreateFileW(pathname, 0x80000100, 0, 0, 3, 0x02200000, 0)
+    hfi = BY_HANDLE_FILE_INFORMATION()
+    if windll.kernel32.GetFileInformationByHandle(hFile, byref(hfi)):
+        windll.kernel32.CloseHandle(hFile)
+        if hfi.nNumberOfLinks > 1:
+            return hfi.nFileIndexLow, hfi.nFileIndexHigh # FileIndex
+    return None
+
+def GetReparsePointTag(pathname):
+	"Retrieves the IO_REPARSE_TAG associated with a reparse point"
+	wfd = WIN32_FIND_DATA()
+	h = windll.kernel32.FindFirstFileW(pathname, byref(wfd))
+	windll.kernel32.CloseHandle(h)
+	logging.debug("Found %s on %s", {0xA000000C:'IO_REPARSE_TAG_SYMLINK',0xA0000003:'IO_REPARSE_TAG_MOUNT_POINT'}[wfd.dwReserved0], wfd.cFileName)
+	return wfd.dwReserved0
+
+def ParseReparseBuf(s, tag):
+	"Parses a WIM reparse point buffer and returns the decoded paths"
+	start = 8
+	SubstNameOffs, SubstNameLen, PrintNameOffs, PrintNameLen = struct.unpack('<HHHH', s[0:8])
+	flags = 0
+	if tag == 0xA000000C:
+		flags = struct.unpack('<I', s[8:12])[0]
+		start += 4
+	i = start+SubstNameOffs
+	SubstName = s[i : i+SubstNameLen].decode('utf-16le')
+	i = start+PrintNameOffs
+	PrintName = s[i : i+PrintNameLen].decode('utf-16le')
+	return flags, SubstName, PrintName
+
+def MakeReparsePoint(tag, dst, target):
+	# FILE_FLAG_OPEN_REPARSE_POINT=0x02200000
+	hFile = windll.kernel32.CreateFileW(dst, 0x40000100, 0, 0, 3, 0x02200000, 0)
+	if hFile != -1:
+		sn = ('\\??\\'+target).encode('utf-16le') + '\0\0'
+		pn = target.encode('utf-16le') + '\0\0'
+		# REPARSE_DATA_BUFFER with MountPointReparseBuffer
+		s = struct.pack('<IHHHHHH', tag, 8+len(sn)+len(pn), 0, 0, len(sn)-2, len(sn), len(pn)-2)
+		s += sn + pn
+		ret = 0
+		# FSCTL_SET_REPARSE_POINT to set the REPARSE_DATA_BUFFER
+		n = c_int() # This is not necessary with Win8/64-bit (?!?)
+		if windll.kernel32.DeviceIoControl(hFile, 0x900A4, s, len(s), 0, 0, byref(n), 0): # Admin rights not required!
+			ret = 1
+		windll.kernel32.CloseHandle(hFile)
+		return ret
+	
+def GetReparsePointData(pathname, srcdir):
+	"Retrieves and fixes the REPARSE_DATA_BUFFER associated with a reparse point"
+	hFile = windll.kernel32.CreateFileW(pathname, 0x80000100, 0, 0, 3, 0x02200000, 0)
+	if hFile != -1:
+		s = create_string_buffer(1024)
+		n = c_int()
+		# FSCTL_GET_REPARSE_POINT to get the REPARSE_DATA_BUFFER
+		if windll.kernel32.DeviceIoControl(hFile, 0x900A8, 0, 0, s, 1024, byref(n), 0):
+			windll.kernel32.CloseHandle(hFile)
+			#~ print s[:n.value]
+			start = 16
+			Tag, wLen, wResv, SubstNameOffs, SubstNameLen, PrintNameOffs, PrintNameLen = struct.unpack('<IHHHHHH', s[0:16])
+			#~ print hex(Tag), wResv, SubstNameOffs, SubstNameLen, PrintNameOffs, PrintNameLen
+			Flags = 0
+			if Tag == 0xA000000C:
+				Flags = struct.unpack('<I', s[16:20])[0]
+				start += 4
+			i = start+SubstNameOffs
+			SubstName = s[i : i+SubstNameLen].decode('utf-16le')
+			i = start+PrintNameOffs
+			PrintName = s[i : i+PrintNameLen].decode('utf-16le')
+			# Fix the abspath if it points inside the image root
+			#~ print SubstName, '\n', os.path.abspath(srcdir)
+			if SubstName.lower().find(os.path.abspath(srcdir).lower()) == 4:
+				SubstName = SubstName[:6] + SubstName[4+len(os.path.abspath(srcdir)):]
+				PrintName = PrintName[:2] + PrintName[len(os.path.abspath(srcdir)):]
+			#~ print SubstName, PrintName
+			logging.debug('Reparse point: tag=%08X, subst="%s", print="%s"', Tag, SubstName, PrintName)
+			SubstName = SubstName.encode('utf-16le')
+			PrintName = PrintName.encode('utf-16le')
+			if not Flags:
+				inc = 2
+			else:
+				inc = 0
+			s = struct.pack('<HHHH', 0, len(SubstName), len(SubstName)+inc, len(PrintName))
+			if Tag == 0xA000000C:
+				s += struct.pack('<I', Flags)
+			if not Flags: # an absolute path gets NULL terminated
+				SubstName += '\0\0'
+				PrintName += '\0\0'
+			s += SubstName + PrintName
+			return Flags, s
+	return None
 
 def print_progress(start_time, totalBytes, totalBytesToDo):
 	"Prints a progress string"
@@ -296,7 +412,7 @@ class DirEntry:
 		self._pos = 0 # posizione nel buffer
 		self._buf = s
 		self._kv = DirEntry.layout.copy()
-		self._vk = {} # { nome: offset}
+		self._vk = {} # { name: offset}
 		for k, v in self._kv.items():
 			self._vk[v[0]] = k
 		self.size = 0
@@ -309,7 +425,7 @@ class DirEntry:
 	__getattr__ = common_getattr
 	
 	def __str__ (self):
-		return class2str(self, "DirEntry @%x\n" % self._pos) + '66: sFileName = %s' % self.FileName
+		return class2str(self, "DirEntry @%x\n" % self._pos) + '66: sFileName = %s' % self.FileName.encode('mbcs')
 
 	def tostr (self):
 		s = ''
@@ -323,6 +439,56 @@ class DirEntry:
 			s += '\0\0' + self.ShortFileName
 		return s + (self.liLength-len(s))*'\0'
 
+
+class StreamEntry:
+	"Represents an alternate stream entry"
+	layout = { # 0x26 (38) bytes
+	0x00: ('liLength', '<Q'), # Length of this STREAMENTRY
+	0x08: ('liUnused', '<Q'),
+	0x10: ('bHash', '20s'), # SHA-1 hash (uncompressed data)
+	0x24: ('wStreamNameLength', '<H') # length of the ADS name (if provided)
+	}
+	# Unicode UTF-16-LE entry name follows, terminated by a Unicode NULL (not mentioned in spec, nor counted in wStreamNameLength),
+	# QWORD aligned itself
+	
+	def __init__(self, s):
+		self._i = 0
+		self._pos = 0
+		self._buf = s
+		self._kv = StreamEntry.layout.copy()
+		self._vk = {} # { name: offset}
+		for k, v in self._kv.items():
+			self._vk[v[0]] = k
+		self.size = 0
+		if self.wStreamNameLength:
+			self.StreamName = (self._buf[0x26:0x26+self.wStreamNameLength]).decode('utf-16le')
+		else:
+			self.StreamName = ''
+		self.FileName = self.StreamName
+		
+	__getattr__ = common_getattr
+	
+	def __str__ (self):
+		return class2str(self, "StreamEntry @%x\n" % self._pos) + '26: sStreamName = %s' % self.StreamName
+
+	def tostr (self):
+		self.length()
+		s = ''
+		keys = self._kv.keys()
+		keys.sort()
+		for k in keys:
+			v = self._kv[k]
+			s += struct.pack(v[1], getattr(self, v[0]))
+		s += self.StreamName + '\0\0'
+		return s + (self.liLength-len(s))*'\0'
+
+	def length(self):
+		self.liLength = 0x26 + self.wStreamNameLength
+		# Sum virtual ending NULL
+		if self.wStreamNameLength: self.liLength += 2
+		self.liLength += (8 - (self.liLength%8) & 7) # QWORD padding
+		logging.debug("StreamEntry padded size=%x", self.liLength)
+		return self.liLength
 
 class DiskResHdr:
 	"Represents size, position and type of a resource inside the WIM file"

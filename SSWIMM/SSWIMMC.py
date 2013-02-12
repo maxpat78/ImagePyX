@@ -3,7 +3,7 @@ SSWIMMC.PY - Super Simple WIM Manager
 Creator module - Multithreaded version
 '''
 
-VERSION = '0.24'
+VERSION = '0.25'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
@@ -24,7 +24,7 @@ from ctypes import *
 from datetime import datetime as dt
 from xml.etree import ElementTree as ET
 from WIMArchive import *
-
+from StringIO import StringIO
 
 def copy(pathname, stream, _blklen=32*1024):
 	"Copies a file content to a previously opened output stream"
@@ -36,6 +36,42 @@ def copy(pathname, stream, _blklen=32*1024):
 		s = fp.read(_blklen)
 		stream.write(s)
 		if len(s) < _blklen: break
+
+def copyres(offset, size, fp_in, fp_out):
+	"Copies a file resource"
+	fp_in.seek(offset)
+	todo = size
+	while todo:
+		if todo > 32768:
+			cb = 32768
+		else:
+			cb = todo
+		fp_out.write(fp_in.read(cb))
+		todo -= cb
+	logging.debug("Copied resource @0x%08X for %d bytes", offset, size)
+
+def get_ads(pathname):
+    "Returns the Alternate Data Streams for a file"
+    if sys.platform not in ('win32', 'cygwin'):
+        return None
+
+    ads = []
+    fsd = WIN32_FIND_STREAM_DATA()
+    if not pathname: return ads
+    # ImageX makes an unnamed data stream for the main contents, but
+    # this seems unnecessary to properly recover all the streams
+    h = windll.kernel32.FindFirstStreamW(pathname, 0, byref(fsd), 0)
+
+    if h != 0xFFFFFFFF:
+        while windll.kernel32.FindNextStreamW(h, byref(fsd)): # CAVE! Fails with junction points!
+            if not fsd.cStreamName.endswith('$DATA'): continue
+            se = StreamEntry(64*'\0')
+            se.FileSize = fsd.StreamSize
+            se.StreamName = fsd.cStreamName[1:-6].encode('utf-16le')
+            se.wStreamNameLength = len(se.StreamName)
+            se.SrcPathname = pathname+fsd.cStreamName[:-6]
+            ads += [se]
+    return ads
 
 def take_sha(pathname, _blklen=32*1024):
 	"Calculates the SHA-1 for file contents"
@@ -65,6 +101,7 @@ def make_wimheader(compress=1):
 		wim.dwFlags = 0 # Uncompressed
 		wim.dwCompressionSize = 0
 	wim.dwFlags |= 0x40 # set FLAG_HEADER_WRITE_IN_PROGRESS
+	wim.dwFlags |= 0x80 # set FLAG_HEADER_RP_FIX
 	wim.gWIMGuid = uuid.uuid4().bytes
 	wim.usPartNumber = 1
 	wim.usTotalParts = 1
@@ -76,7 +113,7 @@ def make_wimheader(compress=1):
 	wim.bUnused = 60*'\0'
 	return wim
 
-def make_direntry(pathname, security, isroot=0):
+def make_direntry(pathname, security, isroot=0, srcdir=None):
 	e = DirEntry(255*'\0')
 	if len(pathname) < 255:
 		st = os.stat(pathname)
@@ -101,6 +138,7 @@ def make_direntry(pathname, security, isroot=0):
 	base = os.path.basename(pathname)
 	e.wFileNameLength = len(base) * 2
 	e.FileName = base.encode('utf-16le')
+	# Handles short file name on Windows
 	if sys.platform in ('win32', 'cygwin'):
 		short_pathname = create_string_buffer(len(pathname)*2+2)
 		i = windll.kernel32.GetShortPathNameW(pathname, short_pathname, 2*len(pathname)+2)
@@ -115,6 +153,24 @@ def make_direntry(pathname, security, isroot=0):
 	if e.wShortNameLength: e.liLength += 2
 	e.liLength += (8 - (e.liLength%8) & 7) # QWORD padding
 	e.bHash = 0
+	# Handles reparse points (directory junctions and symbolic links to files/dirs)
+	if IsReparsePoint(pathname):
+		e.dwAttributes |= 0x400
+		e.dwReparseReserved = GetReparsePointTag(pathname)
+		isRelative, e.sReparseData = GetReparsePointData(pathname, srcdir)
+		if isRelative and e.dwReparseReserved == 0xA000000C: # Symlink
+			e.dwHardLink = 0x10000
+		e.FileSize = len(e.sReparseData)
+	# Stores hard link (nFileIndex)
+	tu = IsHardlinkedFile(pathname)
+	if type(tu) == type(()):
+		e.dwReparseReserved = tu[0] # nFileIndexLow
+		e.dwHardLink = tu[1] # nFileIndexHigh
+	# Handles alternate data streams on Windows
+	e.alt_data_streams = {}
+	if not (e.dwAttributes & 0x10):
+		e.alt_data_streams = get_ads(pathname)
+		e.wStreams = len(e.alt_data_streams)
 	return e
 
 def make_securityblock():
@@ -137,11 +193,14 @@ def make_direntries(directory, security, excludes=None):
 	subdirs = OrderedDict() # {parent folder: childs offset}
 	for root, dirs, files in os.walk(directory):
 		logging.debug("root is now %s", root)
+		if IsReparsePoint(root): # this isn't a true directory
+			logging.debug("Stopped descending into reparse point '%s'", root)
+			continue
 		if excludes and is_excluded(root, excludes):
 			logging.debug("Excluded root %s", root)
 			continue
 		if root == directory:
-			direntries += [make_direntry(root,security,1)]
+			direntries += [make_direntry(root,security,1,directory)]
 			logging.debug("Made Root DIRENTRY %s", root)
 			direntries += [DirEntry(255*'\0')] # a null QWORD marks the end of folder
 			pos += direntries[-2].liLength + 8
@@ -155,9 +214,13 @@ def make_direntries(directory, security, excludes=None):
 				continue
 			if len(item) > 255 and '\\\\?\\' not in pname:
 				pname = '\\\\?\\' + os.path.abspath(pname) # access pathnames > 255
-			direntries += [make_direntry(pname, security)]
+			direntries += [make_direntry(pname, security, srcdir=directory)]
 			pos += direntries[-1].liLength
 			total_input_bytes += direntries[-1].FileSize
+			if direntries[-1].alt_data_streams:
+			    for ads in direntries[-1].alt_data_streams:
+					pos += ads.length()
+					total_input_bytes += ads.FileSize
 			logging.debug("Made File DIRENTRY %s", pname)
 		for item in dirs:
 			if root not in subdirs:
@@ -168,7 +231,7 @@ def make_direntries(directory, security, excludes=None):
 				continue
 			if len(item) > 255 and '\\\\?\\' not in pname:
 				pname = '\\\\?\\' + os.path.abspath(pname) # access pathnames > 255
-			direntries += [make_direntry(pname,security)]
+			direntries += [make_direntry(pname,security,srcdir=directory)]
 			logging.debug("Made Folder DIRENTRY %s", item)
 			pos += direntries[-1].liLength
 			total_input_bytes += direntries[-1].FileSize
@@ -184,6 +247,11 @@ def make_direntries(directory, security, excludes=None):
 def compressor_thread(q, refcounts):
 	while True:
 		e, done = q.get()
+		# Handles a special case: reparse points
+		if e.dwAttributes & 0x400:
+			e.SrcPathname = StringIO(e.sReparseData)
+			e.bCompressed = 0
+			e.liSubdirOffset = 0
 		# Try to save compressor cost at the expense of read inputs twice.
 		crc = take_sha(e.SrcPathname).digest()
 		if crc in refcounts:
@@ -193,6 +261,8 @@ def compressor_thread(q, refcounts):
 			continue
 		tmp = tempfile.SpooledTemporaryFile()
 		cout = OutputStream(tmp, e.FileSize, e.bCompressed)
+		if e.dwAttributes & 0x400:
+			e.SrcPathname = StringIO(e.sReparseData)
 		copy(e.SrcPathname, cout) # how to treat locked/unaccessible files? truncate them to 0?
 		cout.flush()
 		cout.fp.seek(0)
@@ -201,7 +271,10 @@ def compressor_thread(q, refcounts):
 		if e.cFileSize >= e.FileSize: # rewrites uncompressed, if shorter
 			e.bCompressed = 0
 			e.cFileSize = e.FileSize
-			cout.fp = open(e.SrcPathname, 'rb')
+			if e.dwAttributes & 0x400:
+				cout.fp = StringIO(e.sReparseData)
+			else:
+				cout.fp = open(e.SrcPathname, 'rb')
 			logging.debug("File not decreased (+%d bytes), storing uncompressed!", e.cFileSize - e.FileSize)
 		e._stream = cout.fp
 		done += [e]
@@ -226,10 +299,15 @@ def make_fileresources(out, comp, entries, refcounts, total_input_bytes, start_t
 
 	todo_entries = 0
 	for entry in entries:
-		# Skips folders, NULL entries and empty files
-		if entry.dwAttributes & 0x10 or not entry.liLength or not entry.FileSize: continue
+		# Skips folders, NULL entries and empty files. Reparse points are handled like files.
+		#~ if entry.dwAttributes & 0x10 or not entry.liLength or not entry.FileSize: continue
+		if (entry.dwAttributes & 0x10 and not entry.dwAttributes & 0x400) or not entry.liLength or not entry.FileSize: continue
 		entry.bCompressed = comp
 		q.put((entry, done), False)
+		for ads in entry.alt_data_streams:
+                        ads.bCompressed = comp
+                        q.put((ads, done), False)
+        		todo_entries += 1
 		todo_entries += 1
 	
 	done_entries = 0
@@ -373,6 +451,9 @@ def write_direntries(cout, entries, subdirs, srcdir):
 		if not e.bHash: e.bHash = 20*'\0'
 		cout.write(e.tostr())
 		logging.debug("Wrote DIRENTRY %s", e.SrcPathname)
+		for ads in e.alt_data_streams:
+                        cout.write(ads.tostr())
+        		logging.debug("Wrote STREAMENTRY %s", ads.SrcPathname)
 	cout.flush()
 	return dirCount, fileCount
 

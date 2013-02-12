@@ -3,7 +3,7 @@ ImagePyX.py - Super Simple WIM Manager
 Driver main module
 '''
 
-VERSION = '0.24'
+VERSION = '0.25'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
@@ -25,7 +25,7 @@ if __name__ == '__main__':
 %prog [options] --split <file.wim> <SWM max size MiB>
 %prog [options] --apply <file.wim> <image> <target folder>
 %prog [options] --export <source.wim> <image> <dest.wim>"""
-	par = optparse.OptionParser(usage=help_s, version="%prog 0.23 (MT)", description="Manage WIM archives.")
+	par = optparse.OptionParser(usage=help_s, version="%prog 0.25 (MT)", description="Manage WIM archives.")
 	par.add_option("--capture", const=1, action="store_const", dest="sub_module", help="create a new WIM archive with folder's contents")
 	par.add_option("--append", const=2, action="store_const", dest="sub_module", help="append to (or create) a WIM archive with folder's contents")
 	par.add_option("--update", const=3, action="store_const", dest="sub_module", help="update (or create) a WIM archive with folder's contents")
@@ -35,7 +35,7 @@ if __name__ == '__main__':
 	par.add_option("--info", const=7, action="store_const", dest="sub_module", help="show XML information stored inside WIM image")
 	par.add_option("--dir", const=8, action="store_const", dest="sub_module", help="list the image contents")
 	par.add_option("--delete", const=9, action="store_const", dest="sub_module", help="delete an image from WIM archive")
-	par.add_option("--export", const=10, action="store_const", dest="sub_module", help="export an image to a new WIM archive")
+	par.add_option("--export", const=10, action="store_const", dest="sub_module", help="export an image or all images to a WIM archive")
 	par.add_option("-c", "--compress", dest="compression_type", help="select a compression type between none (default), XPRESS, LZX", metavar="COMPRESSION", default="none")
 	par.add_option("-n", "--name", dest="image_name", help="set an Image name in XML data", metavar="NAME", default=None)
 	par.add_option("-d", "--description", dest="image_description", help="set an Image description in XML data", metavar="DESC", default=None)
@@ -62,12 +62,12 @@ if __name__ == '__main__':
 			
 	if opts.sub_module == 1:
 		if len(args) < 2:
-			print "You must specify a WIM file and a source folder!\n"
+			print "You must specify a source folder to capture and a WIM file!\n"
 			sys.exit(1)
 		create(opts, args)
 	elif opts.sub_module == 2:
 		if len(args) < 2:
-			print "You must specify a WIM file to append to/create and a source folder!\n"
+			print "You must specify a source folder and a WIM file to append to/create!\n"
 			sys.exit(1)
 		if os.path.exists(args[0]):
 			append(opts, args)
@@ -75,7 +75,7 @@ if __name__ == '__main__':
 			create(opts, args)
 	elif opts.sub_module == 3:
 		if len(args) < 3:
-			print "You must specify a WIM file, a source folder and an image (by index or name) to update!\n"
+			print "You must specify a source folder, a WIM file and an image (by index or name) to update!\n"
 			sys.exit(1)
 		update(opts, args)
 	elif opts.sub_module == 4:
@@ -85,12 +85,12 @@ if __name__ == '__main__':
 		extract_test(opts, args, True)
 	elif opts.sub_module == 5:
 		if len(args) < 2:
-			print "You must specify a WIM file to split and a SWM unit size in megabytes!\n"
+			print "You must specify a WIM file to split and the maximum SWM unit size in megabytes!\n"
 			sys.exit(1)
 		split(opts, args)
 	elif opts.sub_module == 6:
 		if len(args) < 3:
-			print "You must specify a WIM file, an image to extract and a destination folder!\n"
+			print "You must specify a WIM file and an image (by index or name) to apply, and a target folder!\n"
 			sys.exit(1)
 		extract_test(opts, args)
 	elif opts.sub_module == 7:
@@ -100,7 +100,7 @@ if __name__ == '__main__':
 		info(opts, args)
 	elif opts.sub_module == 8:
 		if len(args) < 1:
-			print "You must specify a WIM file and an image to list!\n"
+			print "You must specify a WIM file and an image (by index or name) to list contents!\n"
 			sys.exit(1)
 		list(opts, args)
 	elif opts.sub_module == 9:

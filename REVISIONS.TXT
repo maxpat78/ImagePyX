@@ -83,14 +83,20 @@ FEB 2012	Planning the WIM archive classes
 		can record short 8+3 file names (Windows)
 		correctly lists each duplicated file resource
 		can export one or all images to a new or old WIM
+12.02.13 r.0.25 can (re)store alternate data streams (Windows)
+		can (re)store hard links to files (Windows)
+		can (re)store junctions and symbolic links (Windows)
+
 
 TODO
 ====
+- foreign SDs: have they to be restored?
+- port wimlib compression code to Windows?
+- calculate <HARDLINKBYTES> amount and other xmldata counters
 - change image name/description in XML data with --info
 - optimization/cleanup of unused resources in an updated WIM
 - multithreaded decompressor?
 - codec: parallelize blocks instead of files?
-- ADS and hard/soft links
 - merge/read from multiple SWM
 - export with resource recompression
 - resolve conflict between images with the same name?

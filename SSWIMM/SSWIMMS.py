@@ -3,7 +3,7 @@ SWIMMS.PY - Part of Super Simple WIM Manager
 Splitter module
 '''
 
-VERSION = '0.24'
+VERSION = '0.25'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
@@ -23,18 +23,6 @@ from WIMArchive import *
 from SSWIMMC import *
 from SSWIMMD import *
 
-def copyres(offset, size, fp_in, fp_out):
-	"Copy a file resource from WIM to SWM"
-	fp_in.seek(offset)
-	todo = size
-	while todo:
-		if todo > 32768:
-			cb = 32768
-		else:
-			cb = todo
-		fp_out.write(fp_in.read(cb))
-		todo -= cb
-	logging.debug("Copied resource @0x%08X for %d bytes", offset, size)
 
 def new_swm(wim, base_name, swm_index):
 	if swm_index == 1:

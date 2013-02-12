@@ -3,7 +3,7 @@ SWIMMD.PY - Part of Super Simple WIM Manager
 Decompressor module
 '''
 
-VERSION = '0.24'
+VERSION = '0.25'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
@@ -133,12 +133,32 @@ def get_direntries(fp):
 			d = DirEntry(fp.read(size))
 			d._pos = pos
 			d._parent = parent
+			d.alt_data_streams = [] # collects the ADS
 			if d.bHash in direntries:
 				direntries[d.bHash] += (d,)
 			else:
 				direntries[d.bHash] = (d,)
 			logging.debug("Parsed DIRENTRY @0x%08X:\n%s", pos, d)
-			if d.dwAttributes & 0x10:
+			# Parses the alternate data streams if present
+			for i in range(d.wStreams):
+				size = struct.unpack('<Q', fp.read(8))[0] & 0x00FFFFFFFFFFFFFF
+				fp.seek(-8, 1)
+				pos = fp.tell()
+				se = StreamEntry(fp.read(size))
+				se.parent = d # Parent DIRENTRY: hack for symlinks
+				if se.FileName:
+					se.FileName = d.FileName + ':' + se.FileName
+				else: # the unnamed stream is the main one!
+					se.FileName = d.FileName
+				se._parent = parent
+				d.alt_data_streams += [se]
+				if se.bHash in direntries:
+					direntries[se.bHash] += (se,)
+				else:
+					direntries[se.bHash] = (se,)
+				logging.debug("Parsed STREAMENTRY @0x%08X:\n%s", pos, se)
+			# A symlink to a directory isn't a real directory; a junction is
+			if d.dwAttributes & 0x10 and d.dwReparseReserved != 0xA000000C:
 				if d.FileName == '':
 					fname = '\\'
 				else:
@@ -211,12 +231,16 @@ def get_metadata(fpi, image, compType):
 
 
 def extract_test(opts, args, testmode=False):
-	def make_dest(prefix, suffix, check=False):
+	def make_dest(prefix, suffix, check=False, create=True):
 		s = os.path.join(prefix, suffix[1:])
 		if not os.path.exists(os.path.dirname(s)):
 			os.makedirs(os.path.dirname(s))
-		# Overwrite by default, like ImageX: provide an option to choose?
-		return open(s, 'wb')
+		if create:
+			# Overwrite by default, like ImageX: provide an option to choose?
+			if os.path.exists(s) and os.path.isfile(s): os.remove(s)
+			return open(s, 'wb')
+		else:
+			return s
 
 	def is_excluded(s, excludes):
 		i_pname = s[s.find('\\'):] # pathname how it will be inside the image
@@ -274,7 +298,7 @@ def extract_test(opts, args, testmode=False):
 
 		print "Collecting DIRENTRY table..."
 		direntries, directories = get_direntries(metadata)
-
+		
 		badfiles = 0
 		total_restored_files = 0
 		totalOutputBytes, totalBytes = 0, 0
@@ -296,25 +320,68 @@ def extract_test(opts, args, testmode=False):
 				continue # Skips unnamed entry, not belonging to processed image
 				
 			if not testmode:
+				# Recreates the directories, included the empty ones
+				for d in directories.values():
+					make_dest(args[2], d+'/dummy', create=False)
+				
+			if not testmode:
 				expanded_source = ''
 				for fres in direntries[ote.bHash]:
 					fname = os.path.join(directories[fres._parent], fres.FileName)
 					if not opts.exclude_list or not is_excluded(fname, opts.exclude_list):
-						# Expand the resource the first time, the duplicates it
+						# Expands the resource the first time, then duplicates or hardlinks it
 						if expanded_source:
 							dst = make_dest(args[2], fname)
 							dst.close()
-							shutil.copy(expanded_source, dst.name)
-							logging.debug("Duplicate File resource: copied '%s' to '%s'", expanded_source, dst.name)
+							if fres.dwReparseReserved and sys.platform in ('win32', 'cygwin'):
+								os.remove(dst.name) # can't make the hard link if the file pre exists!
+								if windll.kernel32.CreateHardLinkW(dst.name, expanded_source, 0): # no Admin required!
+									logging.debug("Duplicate File resource: '%s' hard linked to '%s'", dst.name, expanded_source)
+							else:
+								shutil.copy(expanded_source, dst.name)
+								logging.debug("Duplicate File resource: copied '%s' to '%s'", expanded_source, dst.name)
 						else:
-							dst = make_dest(args[2], fname)
-							copy(file_res, dst)
-							dst.close()
-							expanded_source = dst.name
-						touch(dst.name, fres.liLastWriteTime, fres.liCreationTime, fres.liLastAccessTime)
-						if sys.platform in ('win32', 'cygwin'):
-							windll.kernel32.SetFileAttributesW(dst.name, fres.dwAttributes)
-							security.apply(fres.dwSecurityId, dst.name)
+							# ImageX puts symlink data in the STREAMENTRY, but accepts them in the DIRENTRY, too!
+							if isinstance(fres, StreamEntry):
+								dwReparseReserved = fres.parent.dwReparseReserved
+								dwAttributes = fres.parent.dwAttributes
+							else:
+								dwAttributes = fres.dwAttributes
+								dwReparseReserved = fres.dwReparseReserved
+							# Pre-processes symbolic links and junctions
+							if dwAttributes & 0x400:
+								dst = make_dest(args[2], fname, create=False)
+								bRelative, sn, pn = ParseReparseBuf(file_res.read(32768), dwReparseReserved)
+								if dwReparseReserved == 0xA000000C:
+									dwFlags = bool(dwAttributes & 0x10)
+									# Requires Admin privileges! Can't create if it pre-exists!
+									if os.path.exists(dst) and os.path.isfile(dst): os.remove(dst)
+									if not bRelative:
+										sn = os.path.join(os.path.abspath(args[2]), sn[7:])
+										logging.debug("Fixed absolute path string into %s", sn)
+									if windll.kernel32.CreateSymbolicLinkW(dst, sn, dwFlags):
+										logging.debug("Successfully created symbolic link %s => %s", dst, sn)
+									else:
+										logging.debug("Can't create symbolic link %s => %s", dst, sn)
+								elif dwReparseReserved == 0xA0000003:
+									sn = os.path.join(os.path.abspath(args[2]), sn[7:])
+									if not os.path.exists(dst): os.makedirs(dst)
+									# Admin rights not required!
+									if MakeReparsePoint(dwReparseReserved, os.path.abspath(dst), sn):
+										logging.debug("Successfully created junction %s => %s", dst, sn)
+									else:
+										logging.debug("Can't create junction %s => %s", dst, sn)
+							else:
+								dst = make_dest(args[2], fname)
+								copy(file_res, dst)
+								dst.close()
+								expanded_source = dst.name
+								logging.debug("File resource expanded to '%s'", expanded_source)
+						if hasattr(fres, 'liLastWriteTime'): # ADS haven't all attributes
+							touch(dst.name, fres.liLastWriteTime, fres.liCreationTime, fres.liLastAccessTime)
+							if sys.platform in ('win32', 'cygwin'):
+								windll.kernel32.SetFileAttributesW(dst.name, fres.dwAttributes)
+								security.apply(fres.dwSecurityId, dst.name)
 						total_restored_files += 1
 					else:
 						totalBytes += ote.rhOffsetEntry.liOriginalSize

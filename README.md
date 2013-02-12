@@ -1,7 +1,7 @@
 ImagePyX and SSWIMM
 ===================
 
-This is a Super Simple WIM Manager written entirely in Python[*] (except for the compression code, found at
+This is a Super Simple WIM Manager written entirely in Python[1] (except for the compression code, found at
 https://github.com/coderforlife/ms-compress: please note that only XPRESS compression works well, actually).
 
 With ImagePyX you can:
@@ -13,8 +13,14 @@ With ImagePyX you can:
 - export one or all images to an old/new WIM
 - list and test image contents
 
-On Windows, it can handle short names, security permissions and use native RTL codec (8 only); but it lacks
-ADS and hard/soft links.
+On Windows, it can use the native RTL Xpress codec (8 only) and provides complete handling of:
+ - short names
+ - security permissions
+ - alternate data streams
+ - hard links
+ - directory junctions
+ - symbolic links [2]
+
 
 Useful links about WIM Images:
 	http://en.wikipedia.org/wiki/Windows_Imaging_Format
@@ -22,11 +28,10 @@ Useful links about WIM Images:
 
 
 FOLDER CONTENTS:
-- ImagePyX.py		the main Python module (rev. 0.23), driver for the SSWIMM package
+- ImagePyX.py		the main Python module (rev. 0.25), driver for the SSWIMM package
 - SSWIMM		package directory containing the submodules
 - README.MD		this file
 - gpl.txt		GPL v2 license file: it applies to this package
-
 
 Look at REVISIONS.TXT for details about developement history and things to do.
 
@@ -34,4 +39,5 @@ Look at REVISIONS.TXT for details about developement history and things to do.
 
 
 
-[*] Developed and tested with Python 2.7.3, 32-bit.
+[1] Developed and tested with Python 2.7.3, 32-bit
+[2] Administrator rights are required to restore (create) symbolic links
