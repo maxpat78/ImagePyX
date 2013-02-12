@@ -80,7 +80,8 @@ def IsReparsePoint(pathname):
     "Test if the object is a symbolic link or a junction point"
     if sys.platform not in ('win32', 'cygwin') or not pathname:
         return False
-    return windll.kernel32.GetFileAttributesW(pathname) & 0x400 # FILE_ATTRIBUTE_REPARSE_POINT
+    ret = windll.kernel32.GetFileAttributesW(pathname)
+    if ret > -1: return ret & 0x400 # FILE_ATTRIBUTE_REPARSE_POINT
 
 class WIN32_FIND_STREAM_DATA(Structure):
 	_fields_ = [("StreamSize", c_longlong), ("cStreamName", c_wchar*296)]
@@ -111,9 +112,11 @@ def IsHardlinkedFile(pathname):
 
 def GetReparsePointTag(pathname):
 	"Retrieves the IO_REPARSE_TAG associated with a reparse point"
+	print pathname.encode('mbcs')
 	wfd = WIN32_FIND_DATA()
 	h = windll.kernel32.FindFirstFileW(pathname, byref(wfd))
 	windll.kernel32.CloseHandle(h)
+	print hex(wfd.dwReserved0)
 	logging.debug("Found %s on %s", {0xA000000C:'IO_REPARSE_TAG_SYMLINK',0xA0000003:'IO_REPARSE_TAG_MOUNT_POINT'}[wfd.dwReserved0], wfd.cFileName)
 	return wfd.dwReserved0
 

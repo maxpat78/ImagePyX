@@ -54,7 +54,7 @@ def list(opts, args):
 		for fres in direntries[k]:
 			if fres._parent == -1: continue # skips ROOT
 			fname = os.path.join(directories[fres._parent], fres.FileName)
-			print fname
+			print fname.encode('mbcs')
 
 
 def info(opts, args):

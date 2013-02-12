@@ -110,20 +110,19 @@ def get_securitydata(fp):
 		if windll.advapi32.IsValidSecurityDescriptor(s):
 			sd.SDS[hashlib.sha1(s).digest()] = create_string_buffer(s)
 			logging.debug("Retrieved valid SD with index #%d", len(sd.SDS)-1)
-			#~ open('SD#%d.bin'%(len(sd.SDS)-1),'wb').write(s)
 	return sd
 	
 def get_direntries(fp):
 	"Build the DIRENTRY table and reconstructs the original tree"
 	fp.seek(0)
 	sd_size = struct.unpack('<I', fp.read(4))[0]
+	sd_size += 8 - (sd_size%8) & 7 # it's QWORD aligned!
 	fp.seek(sd_size)
 	direntries = OrderedDict()
 	directories = OrderedDict()
 	parent = -1 # parent's offset == key in directories dict
 	while 1:
 		pos = fp.tell()
-		assert not (pos % 8)
 		if pos in directories: parent = pos
 		s = fp.read(8)
 		if not s: break
