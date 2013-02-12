@@ -112,11 +112,9 @@ def IsHardlinkedFile(pathname):
 
 def GetReparsePointTag(pathname):
 	"Retrieves the IO_REPARSE_TAG associated with a reparse point"
-	print pathname.encode('mbcs')
 	wfd = WIN32_FIND_DATA()
 	h = windll.kernel32.FindFirstFileW(pathname, byref(wfd))
 	windll.kernel32.CloseHandle(h)
-	print hex(wfd.dwReserved0)
 	logging.debug("Found %s on %s", {0xA000000C:'IO_REPARSE_TAG_SYMLINK',0xA0000003:'IO_REPARSE_TAG_MOUNT_POINT'}[wfd.dwReserved0], wfd.cFileName)
 	return wfd.dwReserved0
 
