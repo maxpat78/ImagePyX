@@ -3,7 +3,7 @@ SSWIMMC.PY - Super Simple WIM Manager
 Creator module - Multithreaded version
 '''
 
-VERSION = '0.25'
+VERSION = '0.26'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
@@ -218,7 +218,7 @@ def make_direntries(directory, security, excludes=None):
 			pos += direntries[-1].liLength
 			total_input_bytes += direntries[-1].FileSize
 			if direntries[-1].alt_data_streams:
-			    for ads in direntries[-1].alt_data_streams:
+				for ads in direntries[-1].alt_data_streams:
 					pos += ads.length()
 					total_input_bytes += ads.FileSize
 			logging.debug("Made File DIRENTRY %s", pname)
@@ -300,14 +300,13 @@ def make_fileresources(out, comp, entries, refcounts, total_input_bytes, start_t
 	todo_entries = 0
 	for entry in entries:
 		# Skips folders, NULL entries and empty files. Reparse points are handled like files.
-		#~ if entry.dwAttributes & 0x10 or not entry.liLength or not entry.FileSize: continue
 		if (entry.dwAttributes & 0x10 and not entry.dwAttributes & 0x400) or not entry.liLength or not entry.FileSize: continue
 		entry.bCompressed = comp
 		q.put((entry, done), False)
 		for ads in entry.alt_data_streams:
-                        ads.bCompressed = comp
-                        q.put((ads, done), False)
-        		todo_entries += 1
+			ads.bCompressed = comp
+			q.put((ads, done), False)
+			todo_entries += 1
 		todo_entries += 1
 	
 	done_entries = 0
@@ -362,7 +361,7 @@ def make_offsetimage(cstream, offset):
 	o.bHash = cstream.sha1.digest()
 	return o
 	
-def make_xmldata(wimTotBytes, dirCount, fileCount, totalBytes, StartTime, StopTime, index=1, imgname='', xml=None, imgdsc=''):
+def make_xmldata(wimTotBytes, dirCount, fileCount, totalBytes, hardlinkBytes, StartTime, StopTime, index=1, imgname='', xml=None, imgdsc=''):
 	if xml:
 		root = ET.XML(xml)
 		root.find('TOTALBYTES').text = str(wimTotBytes)
@@ -378,7 +377,7 @@ def make_xmldata(wimTotBytes, dirCount, fileCount, totalBytes, StartTime, StopTi
 	ET.SubElement(img, 'DIRCOUNT').text = str(dirCount)
 	ET.SubElement(img, 'FILECOUNT').text = str(fileCount)
 	ET.SubElement(img, 'TOTALBYTES').text = str(totalBytes)
-	ET.SubElement(img, 'HARDLINKBYTES').text = str(0)
+	ET.SubElement(img, 'HARDLINKBYTES').text = str(hardlinkBytes)
 	c_time = ux2nttime(StartTime) # When image was started
 	tm = ET.SubElement(img, 'CREATIONTIME')
 	ET.SubElement(tm, 'HIGHPART').text = '0x%08X' % (c_time >> 32)
@@ -434,6 +433,8 @@ def write_xmldata(wim, fp, xmldata):
 def write_direntries(cout, entries, subdirs, srcdir):
 	dirCount = -1 # root not counted!
 	fileCount = 0
+	hlinksCount = {}
+	
 	for e in entries:
 		if not e.liLength:
 			cout.write(struct.pack('<Q', 0))
@@ -448,14 +449,21 @@ def write_direntries(cout, entries, subdirs, srcdir):
 				logging.debug("liSubdirOffset updated to 0x%X for %s", e.liSubdirOffset, key)
 		else:
 			fileCount += 1
+			# Tracks hard links bytes
+			if e.dwReparseReserved and e.dwHardLink and e.dwReparseReserved not in (0xA000000C, 0xA000000C):
+				k = e.dwReparseReserved, e.dwHardLink
+				if k in hlinksCount:
+					hlinksCount[k] += e.FileSize
+				else:
+					hlinksCount[k] = 0
 		if not e.bHash: e.bHash = 20*'\0'
 		cout.write(e.tostr())
 		logging.debug("Wrote DIRENTRY %s", e.SrcPathname)
 		for ads in e.alt_data_streams:
-                        cout.write(ads.tostr())
-        		logging.debug("Wrote STREAMENTRY %s", ads.SrcPathname)
+			cout.write(ads.tostr())
+			logging.debug("Wrote STREAMENTRY %s", ads.SrcPathname)
 	cout.flush()
-	return dirCount, fileCount
+	return dirCount, fileCount, sum(hlinksCount.values())
 
 def finalize_wimheader(wim, fp):
 	wim.dwFlags ^= 0x40 # unset FLAG_HEADER_WRITE_IN_PROGRESS
@@ -501,7 +509,7 @@ def create(opts, args):
 	# 3.1 - Security block
 	cout.write(sd_raw)
 
-	dirCount, fileCount = write_direntries(cout, entries, subdirs, srcdir)
+	dirCount, fileCount, hardlinksBytes = write_direntries(cout, entries, subdirs, srcdir)
 	
 	# Restores the uncompressed Metadata if it didn't get smaller
 	meta.seek(0)
@@ -531,7 +539,7 @@ def create(opts, args):
 
 	print "Building the XML Data..."
 	wim.rhXmlData.liOffset = out.tell()
-	write_xmldata(wim, out, make_xmldata(wim.rhXmlData.liOffset, dirCount, fileCount, imgTotalBytes, StartTime, StopTime, imgname=opts.image_name, imgdsc=opts.image_description))
+	write_xmldata(wim, out, make_xmldata(wim.rhXmlData.liOffset, dirCount, fileCount, imgTotalBytes, hardlinksBytes, StartTime, StopTime, imgname=opts.image_name, imgdsc=opts.image_description))
 
 	if opts.integrity_check:
 		write_integrity_table(wim, out)

@@ -5,7 +5,7 @@ WIMArchive.PY - Part of Super Simple WIM Manager
 Common structures and functions
 '''
 
-VERSION = '0.25'
+VERSION = '0.26'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
@@ -112,9 +112,11 @@ def IsHardlinkedFile(pathname):
 
 def GetReparsePointTag(pathname):
 	"Retrieves the IO_REPARSE_TAG associated with a reparse point"
+	print pathname.encode('mbcs')
 	wfd = WIN32_FIND_DATA()
 	h = windll.kernel32.FindFirstFileW(pathname, byref(wfd))
 	windll.kernel32.CloseHandle(h)
+	print hex(wfd.dwReserved0)
 	logging.debug("Found %s on %s", {0xA000000C:'IO_REPARSE_TAG_SYMLINK',0xA0000003:'IO_REPARSE_TAG_MOUNT_POINT'}[wfd.dwReserved0], wfd.cFileName)
 	return wfd.dwReserved0
 
@@ -197,7 +199,12 @@ def print_progress(start_time, totalBytes, totalBytesToDo):
 	"Prints a progress string"
 	pct_done = 100*float(totalBytes)/float(totalBytesToDo)
 	avg_secs_remaining = (time.time() - start_time) / pct_done * 100 - (time.time() - start_time)
-	sys.stdout.write('%.02f%% done, %s left          \r' % (pct_done, datetime.timedelta(seconds=int(avg_secs_remaining))))
+	avg_secs_remaining = int(avg_secs_remaining)
+	if avg_secs_remaining < 61:
+		s = '%d secs' % avg_secs_remaining
+	else:
+		s = '%d:%02d' % (avg_secs_remaining/60, avg_secs_remaining%60)
+	sys.stdout.write('%.02f%% done, %s left          \r' % (pct_done, s))
 
 def print_timings(start, stop):
 	print "Done. %s time elapsed." % datetime.timedelta(seconds=int(stop-start))
@@ -219,9 +226,10 @@ def get_wim_comp(wim):
 	return COMPRESSION_TYPE
 
 
-class XpressHuffCodec:
+class RtlXpressCodec:
 	"Performs XPRESS Huffman (de)compression with Windows 8 NTDLL"
 	def __init__(self):
+		logging.debug("Using NT Xpress codec")
 		CompressBufferWorkSpaceSize, CompressFragmentWorkSpaceSize = c_uint(), c_uint()
 		windll.ntdll.RtlGetCompressionWorkSpaceSize(0x104, byref(CompressBufferWorkSpaceSize), byref(CompressFragmentWorkSpaceSize))
 		self.workspace = max(CompressBufferWorkSpaceSize.value, CompressFragmentWorkSpaceSize.value)
@@ -237,7 +245,54 @@ class XpressHuffCodec:
 		# Warning! cbouts (output buffer size) MUST be equal to the expected output size!
 		assert not windll.ntdll.RtlDecompressBufferEx(4, outs, cbouts, ins, cbins, byref(uncomp_len), self.workspace)
 		return uncomp_len.value
+
+class WimlibLZXCodec:
+	"Performs LZX (de)compression with wimlib"
+	def __init__(self):
+		logging.debug("Using Wimlib LZX codec")
+	
+	def compress(self, ins, cbins, outs, cbouts):
+		comp_len = c_int()
+		cdll.wimlib.lzx_compress(ins, cbins, outs, byref(comp_len))
+		return comp_len.value
 		
+	def decompress(self, ins, cbins, outs, cbouts):
+		cdll.wimlib.lzx_decompress(ins, cbins, outs, cbouts)
+		return cbouts
+
+class WimlibXpressCodec:
+	"Performs Xpress Huffman (de)compression with wimlib"
+	def __init__(self):
+		logging.debug("Using Wimlib Xpress codec")
+	
+	def compress(self, ins, cbins, outs, cbouts):
+		comp_len = c_int()
+		cdll.wimlib.xpress_compress(ins, cbins, outs, byref(comp_len))
+		return comp_len.value
+		
+	def decompress(self, ins, cbins, outs, cbouts):
+		cdll.wimlib.xpress_decompress(ins, cbins, outs, cbouts)
+		return cbouts
+
+class MSCompressionLZXCodec:
+	"Performs LZX (de)compression with MSCompression"
+	def __init__(self):
+		logging.debug("Using MSCompression LZX codec")
+
+	compress = cdll.MSCompression.lzx_wim_compress
+
+	decompress = cdll.MSCompression.lzx_wim_decompress
+	
+class MSCompressionXpressCodec:
+	"Performs Xpress Huffman (de)compression with MSCompression"
+	def __init__(self):
+		logging.debug("Using MSCompression Xpress codec")
+	
+	compress = cdll.MSCompression.xpress_huff_compress
+
+	decompress = cdll.MSCompression.xpress_huff_decompress
+
+
 class BadWim(Exception):
 	pass
 
@@ -631,7 +686,6 @@ class InputStream:
 	def __init_comp(self, csize, compressionType):
 		self._ibuf = '' # 32K input buffer
 		self._obuf = create_string_buffer(32768+6144) # output buffer
-		#~ self._obuf = create_string_buffer(32768*4) # output buffer
 		self._blks = (self.size+32767)/32768 - 1# number of input/output blocks
 		self._iblk = 0 # current input block index
 		self._ipos = 0 # current input block offset
@@ -641,14 +695,17 @@ class InputStream:
 			if sys.platform == 'win32':
 				V = sys.getwindowsversion()
 				if V.major >= 6 and V.minor >= 2:
-					self.decompress = XpressHuffCodec().decompress
-					logging.debug("Using RTL XPRESS Huffman decompressor")
+					self.decompress = RtlXpressCodec().decompress
 				else:
-					self.decompress = cdll.MSCompression.xpress_huff_decompress
-					logging.debug("Using MSCompression XPRESS Huffman decompressor")
-			#~ self.decompress = cdll.MSCompression.xpress_huff_decompress
+					if 0:
+						self.decompress = MSCompressionXpressCodec().decompress
+					else:
+						self.decompress = WimlibXpressCodec().decompress
 		elif self.compressionType == 2:
-			self.decompress = cdll.MSCompression.lzx_wim_decompress
+			if 0:
+				self.decompress = MSCompressionLZXCodec().decompress
+			else:
+				self.decompress = WimlibLZXCodec().decompress
 		self.read = self.__read_comp
 		
 	def __read_comp(self, size=None): # TODO: QWORD if source > 4GiB, DWORD else
@@ -739,13 +796,17 @@ class OutputStream:
 			if sys.platform == 'win32':
 				V = sys.getwindowsversion()
 				if V.major >= 6 and V.minor >= 2:
-					self.compress = XpressHuffCodec().compress
-					logging.debug("Using RTL XPRESS Huffman compressor")
+					self.compress = RtlXpressCodec().compress
 				else:
-					self.compress = cdll.MSCompression.xpress_huff_compress
-					logging.debug("Using RTL XPRESS Huffman compressor")
+					if 0:
+						self.compress = MSCompressionXpressCodec().compress
+					else:
+						self.compress = WimlibXpressCodec().compress
 		elif self.compressionType == 2:
-			self.compress = cdll.MSCompression.lzx_wim_compress
+			if 0:
+				self.compress = MSCompressionLZXCodec().compress
+			else:
+				self.compress = WimlibLZXCodec().compress
 		self.write = self.__write_comp
 		self.flush = self.__flush_comp
 

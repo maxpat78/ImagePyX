@@ -3,7 +3,7 @@ SWIMMU.PY - Part of Super Simple WIM Manager
 Updater module
 '''
 
-VERSION = '0.25'
+VERSION = '0.26'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
@@ -99,7 +99,7 @@ def update(opts, args):
 
 	cout.write(security.tostr())
 
-	dirCount, fileCount = write_direntries(cout, entries, subdirs, srcdir)
+	dirCount, fileCount, hardlinksBytes = write_direntries(cout, entries, subdirs, srcdir)
 
 	meta.seek(0)
 	if cout.sha1.digest() in offset_table:
@@ -144,7 +144,7 @@ def update(opts, args):
 	print "Updating the XML Data..."
 	xml = get_xmldata(out, wim)
 	wim.rhXmlData.liOffset = out.tell()
-	xml = make_xmldata(wim.rhXmlData.liOffset, dirCount, fileCount, totalBytes, StartTime, StopTime, image_index_to_update+1, xml=xml, imgname=opts.image_name)
+	xml = make_xmldata(wim.rhXmlData.liOffset, dirCount, fileCount, totalBytes, hardlinksBytes, StartTime, StopTime, image_index_to_update+1, xml=xml, imgname=opts.image_name)
 	write_xmldata(wim, out, xml)
 
 	if opts.integrity_check:

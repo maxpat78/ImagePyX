@@ -3,7 +3,7 @@ ImagePyX.py - Super Simple WIM Manager
 Driver main module
 '''
 
-VERSION = '0.25'
+VERSION = '0.26'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
@@ -25,7 +25,7 @@ if __name__ == '__main__':
 %prog [options] --split <file.wim> <SWM max size MiB>
 %prog [options] --apply <file.wim> <image> <target folder>
 %prog [options] --export <source.wim> <image> <dest.wim>"""
-	par = optparse.OptionParser(usage=help_s, version="%prog 0.25 (MT)", description="Manage WIM archives.")
+	par = optparse.OptionParser(usage=help_s, version="%prog 0.26 (MT)", description="Manage WIM archives.")
 	par.add_option("--capture", const=1, action="store_const", dest="sub_module", help="create a new WIM archive with folder's contents")
 	par.add_option("--append", const=2, action="store_const", dest="sub_module", help="append to (or create) a WIM archive with folder's contents")
 	par.add_option("--update", const=3, action="store_const", dest="sub_module", help="update (or create) a WIM archive with folder's contents")

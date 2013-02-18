@@ -86,19 +86,20 @@ FEB 2012	Planning the WIM archive classes
 12.02.13 r.0.25 can (re)store alternate data streams (Windows)
 		can (re)store hard links to files (Windows)
 		can (re)store junctions and symbolic links (Windows)
-
+16.02.13 r.0.26 use compression code from wimlib
+                full LZX support via wimlib
+		can calculate bytes in hard links
 
 TODO
 ====
+- handle not accessible files (i.e. when Admin rights are required)
 - foreign SDs: have they to be restored?
-- port wimlib compression code to Windows?
-- calculate <HARDLINKBYTES> amount and other xmldata counters
-- change image name/description in XML data with --info
-- optimization/cleanup of unused resources in an updated WIM
-- multithreaded decompressor?
-- codec: parallelize blocks instead of files?
 - merge/read from multiple SWM
 - export with resource recompression
+- codec: parallelize blocks instead of files?
+- multithreaded decompressor?
+- change image name/description in XML data with --info
+- optimization/cleanup of unused resources in an updated WIM
 - resolve conflict between images with the same name?
 - set FLAG_HEADER_RESOURCE_ONLY, FLAG_HEADER_METADATA_ONLY in WIM header
 - investigate around RESHDR_FLAG_FREE
