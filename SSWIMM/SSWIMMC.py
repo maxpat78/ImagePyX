@@ -3,12 +3,15 @@ SSWIMMC.PY - Super Simple WIM Manager
 Creator module - Multithreaded version
 '''
 
-VERSION = '0.26'
+VERSION = '0.27'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
 
+import Codecs
 import fnmatch
+import w32_fnmatch
+fnmatch.translate = w32_fnmatch.win32_translate
 import optparse
 import hashlib
 import logging
@@ -62,7 +65,7 @@ def get_ads(pathname):
     # this seems unnecessary to properly recover all the streams
     h = windll.kernel32.FindFirstStreamW(pathname, 0, byref(fsd), 0)
 
-    if h != 0xFFFFFFFF:
+    if h != -1:
         while windll.kernel32.FindNextStreamW(h, byref(fsd)): # CAVE! Fails with junction points!
             if not fsd.cStreamName.endswith('$DATA'): continue
             se = StreamEntry(64*'\0')
@@ -71,21 +74,8 @@ def get_ads(pathname):
             se.wStreamNameLength = len(se.StreamName)
             se.SrcPathname = pathname+fsd.cStreamName[:-6]
             ads += [se]
+    windll.kernel32.CloseHandle(h)
     return ads
-
-def take_sha(pathname, _blklen=32*1024):
-	"Calculates the SHA-1 for file contents"
-	if type(pathname) in (type(''), type(u'')):
-		fp = open(pathname, 'rb')
-	else:
-		fp = pathname
-	sha = hashlib.sha1()
-	while 1:
-		s = fp.read(_blklen)
-		sha.update(s)
-		if len(s) < _blklen: break
-	fp.close()
-	return sha
 
 def make_wimheader(compress=1):
 	wim = WIMHeader(208*'\0')
@@ -244,92 +234,68 @@ def make_direntries(directory, security, excludes=None):
 		subdirs[it] += security.length() # fix final offset relative to Security Data object
 	return pos, direntries, subdirs, total_input_bytes
 
-def compressor_thread(q, refcounts):
-	while True:
-		e, done = q.get()
+def make_fileresources(out, comp, entries, refcounts, total_input_bytes, start_time):
+	"Packs the files content into the image, discarding duplicates according to their SHA-1"
+	totalBytes = 0 # Total bytes for files uncompressed content, duplicates included
+
+	comp_start_time = time.time()
+	
+	chunk_hash_table = {}
+	
+	for e in entries:
+		# Skips folders, NULL entries and empty files. Reparse points are handled like files.
+		if (e.dwAttributes & 0x10 and not e.dwAttributes & 0x400) or not e.liLength or not e.FileSize: continue
+		e.bCompressed = comp
 		# Handles a special case: reparse points
 		if e.dwAttributes & 0x400:
 			e.SrcPathname = StringIO(e.sReparseData)
 			e.bCompressed = 0
 			e.liSubdirOffset = 0
-		# Try to save compressor cost at the expense of read inputs twice.
-		crc = take_sha(e.SrcPathname).digest()
-		if crc in refcounts:
-			e.bHash = crc
-			done += [e]
-			q.task_done()
-			continue
-		tmp = tempfile.SpooledTemporaryFile()
-		cout = OutputStream(tmp, e.FileSize, e.bCompressed)
+		fp, chunk_crc = take_sha(e.SrcPathname, first_chunk=1)
+		if chunk_crc in chunk_hash_table:
+			fp, crc = take_sha(e.SrcPathname)
+			if crc in refcounts:
+				h = refcounts[crc]
+				refcounts[crc] = (h[0], h[1], h[2], h[3]+1, h[4])
+				logging.debug("Discarded %s (hash collision)", e.SrcPathname)
+				e.Offset = h[0]
+				e.bHash = crc
+				totalBytes += e.FileSize
+				print_progress(comp_start_time, totalBytes, total_input_bytes)
+				continue
+			calc_crc = False
+		else:
+			chunk_hash_table[chunk_crc] = 1
+			calc_crc = True
 		if e.dwAttributes & 0x400:
 			e.SrcPathname = StringIO(e.sReparseData)
-		copy(e.SrcPathname, cout) # how to treat locked/unaccessible files? truncate them to 0?
-		cout.flush()
-		cout.fp.seek(0)
-		e.cFileSize = cout.csize()
+		#~ if type(e.SrcPathname) in (type(''), type(u'')):
+			#~ fp = open(e.SrcPathname, 'rb')
+		#~ else:
+			#~ fp = e.SrcPathname
+		e.Offset = out.tell() # Fileresource start offset inside WIM
+		logging.debug("Starting new File resource @%08X", e.Offset)
+		#~ logging.debug("fp=%s, out=%s, e.FileSize=%d, calc_crc=%s", fp, out, e.FileSize, calc_crc)
+		Codecs.Codec.compress(fp, out, e.FileSize, calc_crc)
+		if calc_crc:
+			crc = Codecs.Codec.sha1.digest()
+			if crc in refcounts: # This is required for proper append task!
+				h = refcounts[crc]
+				refcounts[crc] = (h[0], h[1], h[2], h[3]+1, h[4])
+				logging.debug("Discarded %s (hash collision) - stream rewinded", e.SrcPathname)
+				out.seek(e.Offset)
+				e.Offset = h[0]
+				e.bHash = crc
+				totalBytes += e.FileSize
+				print_progress(comp_start_time, totalBytes, total_input_bytes)
+				continue
+		logging.debug("Wrote content from %s", e.SrcPathname)
+		e.cFileSize = Codecs.Codec.osize
 		e.bHash = crc
-		if e.cFileSize >= e.FileSize: # rewrites uncompressed, if shorter
-			e.bCompressed = 0
-			e.cFileSize = e.FileSize
-			if e.dwAttributes & 0x400:
-				cout.fp = StringIO(e.sReparseData)
-			else:
-				cout.fp = open(e.SrcPathname, 'rb')
-			logging.debug("File not decreased (+%d bytes), storing uncompressed!", e.cFileSize - e.FileSize)
-		e._stream = cout.fp
-		done += [e]
-		q.task_done()
-		
-def make_fileresources(out, comp, entries, refcounts, total_input_bytes, start_time):
-	"Packs the files content into the image, discarding duplicates according to their SHA-1"
-	totalBytes = 0 # Total bytes for files uncompressed content, duplicates included
-	done = []
-	
-	q = Queue.Queue()
-	
-	if not comp:
-		num_threads = 1 # or raises IOError: [Errno 24] Too many open files
-	else:
-		num_threads = 3
-	
-	for i in range(num_threads):
-		T = threading.Thread(target=compressor_thread, args=(q, refcounts))
-		T.daemon = True
-		T.start()
-
-	todo_entries = 0
-	for entry in entries:
-		# Skips folders, NULL entries and empty files. Reparse points are handled like files.
-		if (entry.dwAttributes & 0x10 and not entry.dwAttributes & 0x400) or not entry.liLength or not entry.FileSize: continue
-		entry.bCompressed = comp
-		q.put((entry, done), False)
-		for ads in entry.alt_data_streams:
-			ads.bCompressed = comp
-			q.put((ads, done), False)
-			todo_entries += 1
-		todo_entries += 1
-	
-	done_entries = 0
-	while done_entries < todo_entries:
-		if not done:
-			time.sleep(0.015)
-			continue
-		e = done.pop(0)
-		done_entries += 1
+		refcounts[e.bHash] = (e.Offset, e.FileSize, e.cFileSize, 1, e.bCompressed)
 		totalBytes += e.FileSize
-		print_progress(start_time, totalBytes, total_input_bytes)
-		if e.bHash in refcounts:
-			h = refcounts[e.bHash]
-			refcounts[e.bHash] = (h[0], h[1], h[2], h[3]+1, h[4])
-			logging.debug("Discarded %s (hash collision)", e.SrcPathname)
-			e.Offset = h[0]
-		else:
-			e.Offset = out.tell() # Fileresource start offset inside WIM
-			logging.debug("Starting new File resource @%08X", e.Offset)
-			refcounts[e.bHash] = (e.Offset, e.FileSize, e.cFileSize, 1, e.bCompressed)
-			copy(e._stream, out)
-			e._stream.close()
-			logging.debug("Wrote content from %s", e.SrcPathname)
+		print_progress(comp_start_time, totalBytes, total_input_bytes)
+		fp.close() # check for ADS!!!
 	return totalBytes, refcounts
 	
 def make_offsettable(hash, e, partnum=1):
@@ -346,19 +312,19 @@ def make_offsettable(hash, e, partnum=1):
 	logging.debug("Made offset entry for resource @0x%08X, size=%d, flags=%d", e[0], e[1], o.rhOffsetEntry.bFlags)
 	return o
 
-def make_offsetimage(cstream, offset):
+def make_offsetimage(codec, offset):
 	o = OffsetTableEntry(64*'\0')
 	o.rhOffsetEntry = DiskResHdr(64*'\0')
-	o.rhOffsetEntry.ullSize = cstream.csize()
+	o.rhOffsetEntry.ullSize = codec.osize
 	o.rhOffsetEntry.bFlags = 2 # Flag as Metadata
 	o.rhOffsetEntry.liOffset = offset
-	o.rhOffsetEntry.liOriginalSize = cstream.size
+	o.rhOffsetEntry.liOriginalSize = Codecs.Codec.isize
 	if o.rhOffsetEntry.ullSize < o.rhOffsetEntry.liOriginalSize:
 		o.rhOffsetEntry.bFlags |= 4 # mark as compressed
 	logging.debug("Metadata resource @%0X for %d bytes (%d original)",o.rhOffsetEntry.liOffset, o.rhOffsetEntry.ullSize, o.rhOffsetEntry.liOriginalSize)
 	o.usPartNumber = 1
 	o.dwRefCount = 1
-	o.bHash = cstream.sha1.digest()
+	o.bHash = Codecs.Codec.sha1.digest()
 	return o
 	
 def make_xmldata(wimTotBytes, dirCount, fileCount, totalBytes, hardlinkBytes, StartTime, StopTime, index=1, imgname='', xml=None, imgdsc=''):
@@ -471,16 +437,31 @@ def finalize_wimheader(wim, fp):
 	fp.seek(0)
 	fp.write(wim.tostr())
 	fp.close()
-	
-	
+
+
 def create(opts, args):
-	out = open(args[1], 'w+b')
+	# Note: writing to a new file is twice as faster than writing to a preexisting one!
+	# It seems necessary to erase the previous file, or it becomes very slow on writing!
+	if os.path.exists(args[1]):
+		os.remove(args[1])
+	out = open(args[1], 'wb')
+
 	COMPRESSION_TYPE = {'none':0, 'xpress':1, 'lzx':2}[opts.compression_type.lower()]
 	srcdir = args[0]
+
+	Codecs.Codec = Codecs.CodecMT(opts.num_threads, COMPRESSION_TYPE)
+	
+	if opts.threshold:
+		Codecs.Codec.threshold_size = opts.threshold.size
+		Codecs.Codec.threshold_ratio = opts.threshold.ratio
+		Codecs.Codec.threshold_ratio = opts.threshold.ratio
 	
 	# 1 - WIM Header
 	wim = make_wimheader(COMPRESSION_TYPE)
 	out.write(wim.tostr())
+
+	AcquirePrivilege("SeBackupPrivilege")
+	AcquirePrivilege("SeSecurityPrivilege")
 
 	StartTime = time.time()
 
@@ -504,32 +485,24 @@ def create(opts, args):
 	logging.debug("Image start @%08X", image_start)
 
 	meta = tempfile.TemporaryFile()
-	cout = OutputStream(meta, metadata_size, COMPRESSION_TYPE)
 
 	# 3.1 - Security block
-	cout.write(sd_raw)
+	meta.write(sd_raw)
 
-	dirCount, fileCount, hardlinksBytes = write_direntries(cout, entries, subdirs, srcdir)
-	
-	# Restores the uncompressed Metadata if it didn't get smaller
+	# 3.2 - Direntries
+	dirCount, fileCount, hardlinksBytes = write_direntries(meta, entries, subdirs, srcdir)
+
+	meta_size = meta.tell() # uncomp/comp size
 	meta.seek(0)
-	if cout.csize() >= metadata_size:
-		cinp = InputStream(meta, metadata_size, cout.csize(), COMPRESSION_TYPE)
-		cout = OutputStream(out, metadata_size, 0)
-		copy(cinp, cout)
-		logging.debug("Restored the uncompressed Metadata")
-	else:
-		cout2 = OutputStream(out, metadata_size, 0)
-		copy(meta, cout2)
-		logging.debug("Copied the compressed Metadata")
-
+	Codecs.Codec.compress(meta, out, meta_size, True)
+	
 	StopTime = time.time()
 
-	# 5 - Offset Table
+	# 4 - Offset Table
 	print "Building the Offsets table..."
 	wim.rhOffsetTable.liOffset = out.tell()
 	logging.debug("Writing Offset table @0x%08X", wim.rhOffsetTable.liOffset)
-	oimg = make_offsetimage(cout, image_start)
+	oimg = make_offsetimage(Codecs.Codec, image_start)
 	out.write(oimg.tostr())
 	for e in RefCounts:
 		out.write(make_offsettable(e, RefCounts[e]).tostr())
@@ -537,6 +510,7 @@ def create(opts, args):
 	wim.rhOffsetTable.ullSize = out.tell() - wim.rhOffsetTable.liOffset
 	wim.rhOffsetTable.liOriginalSize = wim.rhOffsetTable.ullSize
 
+	# 5 - XML Data
 	print "Building the XML Data..."
 	wim.rhXmlData.liOffset = out.tell()
 	write_xmldata(wim, out, make_xmldata(wim.rhXmlData.liOffset, dirCount, fileCount, imgTotalBytes, hardlinksBytes, StartTime, StopTime, imgname=opts.image_name, imgdsc=opts.image_description))
@@ -547,3 +521,4 @@ def create(opts, args):
 	finalize_wimheader(wim, out)
 
 	print_timings(StartTime, StopTime)
+	#~ print "Files stored due to Threshold filter:", Codecs.Codec.compressions_skipped

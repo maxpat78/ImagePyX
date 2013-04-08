@@ -3,12 +3,14 @@ SWIMMD.PY - Part of Super Simple WIM Manager
 Decompressor module
 '''
 
-VERSION = '0.26'
+VERSION = '0.27'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
 
 import fnmatch
+import w32_fnmatch
+fnmatch.translate = w32_fnmatch.win32_translate
 import hashlib
 import logging
 import optparse
@@ -23,12 +25,8 @@ from collections import OrderedDict
 from datetime import datetime as dt
 from xml.etree import ElementTree as ET
 from WIMArchive import *
+from Codecs import CodecMT
 
-def copy(src, dst):
-	while 1:
-		s = src.read(32768)
-		if dst: dst.write(s)
-		if len(s) < 32768: break
 
 def get_wimheader(fp):
 	fp.seek(0)
@@ -53,8 +51,6 @@ def check_integrity(wim, fp):
 		if it.Entries[c] != hashlib.sha1(s).digest():
 			status = 1
 			logging.debug("Chunk %d failed integrity check", c)
-		else:
-			logging.debug("Chunk %d passed integrity check", c)
 	return status
 
 def get_xmldata(fp, wim):
@@ -88,13 +84,23 @@ def get_images(fp, wim):
 		raise BadWim
 	return images
 
-def get_resource(fp, ote, defaultcomp=0):
-	fp.seek(ote.rhOffsetEntry.liOffset)
-	if not ote.rhOffsetEntry.bFlags & 4:
-		res_comp = 0
+def get_resource(fpi, ote, null=False, target=None):
+	"Test a resource and returns a stream to it, eventually expanded"
+	#~ if not ote.rhOffsetEntry.liOriginalSize:
+		#~ return (True, open(target, 'wb'))
+	pos = fpi.tell()
+	fpi.seek(ote.rhOffsetEntry.liOffset)
+	if null:
+		tmpres = open(('/dev/null','NUL')[sys.platform in ('win32', 'cygwin')], 'wb')
 	else:
-		res_comp = defaultcomp
-	return InputStream(fp, ote.rhOffsetEntry.liOriginalSize, ote.rhOffsetEntry.ullSize, res_comp)
+		if target:
+			tmpres = open(target, 'wb')
+		else:
+			tmpres = tempfile.TemporaryFile()
+	Codecs.Codec.decompress(fpi, ote.rhOffsetEntry.ullSize, tmpres, ote.rhOffsetEntry.liOriginalSize, True)
+	fpi.seek(pos)
+	tmpres.seek(0)
+	return (ote.bHash == Codecs.Codec.sha1.digest(), tmpres)
 
 def get_securitydata(fp):
 	"Build the SecurityData hash table"
@@ -109,7 +115,8 @@ def get_securitydata(fp):
 		s = fp.read(i)
 		if windll.advapi32.IsValidSecurityDescriptor(s):
 			sd.SDS[hashlib.sha1(s).digest()] = create_string_buffer(s)
-			logging.debug("Retrieved valid SD with index #%d", len(sd.SDS)-1)
+		else:
+			logging.debug("Invalid SD found at index #%d", len(sd.SDS)-1)
 	return sd
 	
 def get_direntries(fp):
@@ -202,6 +209,11 @@ def get_xmldata_imgmtime(xmlobj, index):
 			m_time = (m_time << 32) | int(node.find('LASTMODIFICATIONTIME/LOWPART').text, 16)
 			return nt2uxtime(m_time)
 
+def get_xmldata_imgsize(xmlobj, index):
+	for node in xmlobj.iter('IMAGE'):
+		if node.get('INDEX') == str(index):
+			return int(node.find('TOTALBYTES').text)
+
 def get_image_from_id(wim, fp, id):
 	try:
 		img_index = int(id)
@@ -214,14 +226,10 @@ def get_image_from_id(wim, fp, id):
 			sys.exit(1)
 	return img_index
 
-def get_metadata(fpi, image, compType):
+def get_metadata(fpi, image):
 	"Returns a stream to the uncompressed Metadata resource"
-	metadata_res = get_resource(fpi, image, compType)
-
-	metadata = tempfile.TemporaryFile()
-	copy(metadata_res, metadata)
-
-	if metadata_res.sha1.digest() != image.bHash:
+	is_good, metadata = get_resource(fpi, image)
+	if not is_good:
 		logging.debug("FATAL: broken Metadata resource!")
 		sys.exit(1)
 	else:
@@ -229,18 +237,18 @@ def get_metadata(fpi, image, compType):
 	return metadata
 
 
+# INF folder
+# test: 5" [2-open] vs 2" (7z)
+# apply: 20"-14" vs 9"-14" (7z) (1st to empty dir, 2nd to full dir)
+# XP.wim test: 45" [open] vs 31" (7-zip)
+# XP.wim test: 60" [open] vs 31" (7-zip)
+# Applying the INF folder: 1'17" vs 12/14" (wimlib-imagex/7-zip)
+# Applying the INF folder: 18" vs 12/14" (wimlib-imagex/7-zip)
+# XP.wim apply: 3:07 vs 2:12 (7-zip) vs 2:36 (wimlib)
+# CON updating impacts for 20" on 62?
+# Applying times, perms and SDs impacts for about 10"
+# XP.wim apply: 3:11 even with console off!
 def extract_test(opts, args, testmode=False):
-	def make_dest(prefix, suffix, check=False, create=True):
-		s = os.path.join(prefix, suffix[1:])
-		if not os.path.exists(os.path.dirname(s)):
-			os.makedirs(os.path.dirname(s))
-		if create:
-			# Overwrite by default, like ImageX: provide an option to choose?
-			if os.path.exists(s) and os.path.isfile(s): os.remove(s)
-			return open(s, 'wb')
-		else:
-			return s
-
 	def is_excluded(s, excludes):
 		i_pname = s[s.find('\\'):] # pathname how it will be inside the image
 		# if the excluded item is a dir, we want subcontents excluded also! (x+\*)
@@ -255,20 +263,22 @@ def extract_test(opts, args, testmode=False):
 
 	COMPRESSION_TYPE = get_wim_comp(wim)
 
+	Codecs.Codec = CodecMT(opts.num_threads, COMPRESSION_TYPE)
+
 	offset_table = get_offsettable(fpi, wim)
-	
+
 	if len(args) > 1:
 		img_index = get_image_from_id(wim, fpi, args[1])
 	else:
 		img_index = 0
-		
+
 	images = get_images(fpi, wim)
-	
+
 	if img_index > len(images):
 		print "Image index doesn't exist!"
 		sys.exit(1)
 	img_index -= 1
-	
+
 	if img_index > -1:
 		images = [images[img_index]]
 
@@ -277,11 +287,17 @@ def extract_test(opts, args, testmode=False):
 			print "Destination directory '%s' does not exist: aborting!" % args[2]
 			sys.exit(1)
 
+	# This is required to properly restore SDs!
+	# WARNING! If applying to a preexisting folder, one could need to take the ownership of the full tree!
+	AcquirePrivilege("SeRestorePrivilege")
+	AcquirePrivilege("SeSecurityPrivilege")
+	AcquirePrivilege("SeTakeOwnershipPrivilege")
+
 	for image in images:
 		img_index += 1
-		
+
 		print "Processing Image #%d" % (1, img_index)[img_index > 0]
-		
+
 		status = check_integrity(wim, fpi)
 		if status == -1:
 			print "Integrity table not present"
@@ -291,112 +307,141 @@ def extract_test(opts, args, testmode=False):
 			print "Integrity check passed!"
 
 		print "Opening Metadata resource..."
-		metadata = get_metadata(fpi, image, COMPRESSION_TYPE)
+		metadata = get_metadata(fpi, image)
 
 		security = get_securitydata(metadata)
 
 		print "Collecting DIRENTRY table..."
 		direntries, directories = get_direntries(metadata)
-		
+
 		badfiles = 0
 		total_restored_files = 0
 		totalOutputBytes, totalBytes = 0, 0
-		for ote in offset_table.values():
-			totalOutputBytes +=ote.rhOffsetEntry.liOriginalSize
-		
-		if not testmode:
-			print "Extracting File resources..."
-			# calculates total bytes to extract
-		else:
-			print "Testing File resources..."
-			
-		for ote in offset_table.values():
-			# Skip Images
-			if ote.rhOffsetEntry.bFlags & 2: continue
-			file_res = get_resource(fpi, ote, COMPRESSION_TYPE)
 
-			if ote.bHash not in direntries:
-				continue # Skips unnamed entry, not belonging to processed image
-				
-			if not testmode:
-				# Recreates the directories, included the empty ones
-				for d in directories.values():
-					make_dest(args[2], d+'/dummy', create=False)
-				
-			if not testmode:
-				expanded_source = ''
-				for fres in direntries[ote.bHash]:
-					fname = os.path.join(directories[fres._parent], fres.FileName)
-					if not opts.exclude_list or not is_excluded(fname, opts.exclude_list):
-						# Expands the resource the first time, then duplicates or hardlinks it
-						if expanded_source:
-							dst = make_dest(args[2], fname)
-							dst.close()
-							if fres.dwReparseReserved and sys.platform in ('win32', 'cygwin'):
-								os.remove(dst.name) # can't make the hard link if the file pre exists!
-								if windll.kernel32.CreateHardLinkW(dst.name, expanded_source, 0): # no Admin required!
-									logging.debug("Duplicate File resource: '%s' hard linked to '%s'", dst.name, expanded_source)
-							else:
-								shutil.copy(expanded_source, dst.name)
-								logging.debug("Duplicate File resource: copied '%s' to '%s'", expanded_source, dst.name)
-						else:
-							# ImageX puts symlink data in the STREAMENTRY, but accepts them in the DIRENTRY, too!
-							if isinstance(fres, StreamEntry):
-								dwReparseReserved = fres.parent.dwReparseReserved
-								dwAttributes = fres.parent.dwAttributes
-							else:
-								dwAttributes = fres.dwAttributes
-								dwReparseReserved = fres.dwReparseReserved
-							# Pre-processes symbolic links and junctions
-							if dwAttributes & 0x400:
-								dst = make_dest(args[2], fname, create=False)
-								bRelative, sn, pn = ParseReparseBuf(file_res.read(32768), dwReparseReserved)
-								if dwReparseReserved == 0xA000000C:
-									dwFlags = bool(dwAttributes & 0x10)
-									# Requires Admin privileges! Can't create if it pre-exists!
-									if os.path.exists(dst) and os.path.isfile(dst): os.remove(dst)
-									if not bRelative:
-										sn = os.path.join(os.path.abspath(args[2]), sn[7:])
-										logging.debug("Fixed absolute path string into %s", sn)
-									if windll.kernel32.CreateSymbolicLinkW(dst, sn, dwFlags):
-										logging.debug("Successfully created symbolic link %s => %s", dst, sn)
-									else:
-										logging.debug("Can't create symbolic link %s => %s", dst, sn)
-								elif dwReparseReserved == 0xA0000003:
-									sn = os.path.join(os.path.abspath(args[2]), sn[7:])
-									if not os.path.exists(dst): os.makedirs(dst)
-									# Admin rights not required!
-									if MakeReparsePoint(dwReparseReserved, os.path.abspath(dst), sn):
-										logging.debug("Successfully created junction %s => %s", dst, sn)
-									else:
-										logging.debug("Can't create junction %s => %s", dst, sn)
-							else:
-								dst = make_dest(args[2], fname)
-								copy(file_res, dst)
-								dst.close()
-								expanded_source = dst.name
-								logging.debug("File resource expanded to '%s'", expanded_source)
-						if hasattr(fres, 'liLastWriteTime'): # ADS haven't all attributes
-							touch(dst.name, fres.liLastWriteTime, fres.liCreationTime, fres.liLastAccessTime)
-							if sys.platform in ('win32', 'cygwin'):
-								windll.kernel32.SetFileAttributesW(dst.name, fres.dwAttributes)
-								security.apply(fres.dwSecurityId, dst.name)
-						total_restored_files += 1
+		NULLK = 20*'\0'
+		# Simply pick the TOTALBYTES field from XML?
+		for ote in direntries:
+			if ote == NULLK: continue # skips NULL keys
+			totalOutputBytes += offset_table[ote].rhOffsetEntry.liOriginalSize * len(direntries[ote])
+
+		# Sorts by on-disk resource offset
+		def direntries_sort(a, b):
+			if a[0] == NULLK or b[0] == NULLK: return 0
+			return cmp(offset_table[a[0]].rhOffsetEntry.liOffset, offset_table[b[0]].rhOffsetEntry.liOffset)
+		direntries = OrderedDict(sorted(direntries.items(), direntries_sort))
+		
+		application_start_time = time.time()
+		
+		# Recreates the target directory tree and the empty files
+		if not testmode:
+			for fres in direntries[NULLK]:
+				fname = os.path.join(args[2], directories.get(fres._parent, " ")[1:], fres.FileName)
+				if opts.exclude_list and is_excluded(fname, opts.exclude_list):
+					continue
+				if fres.dwAttributes & 0x10: # creates the empty directory
+					if os.path.exists(fname):
+						if os.path.isfile(fname):
+							os.remove(fname)
 					else:
-						totalBytes += ote.rhOffsetEntry.liOriginalSize
+						os.mkdir(fname)
+				else:
+					open(fname, 'wb') # creates the empty file
+
+		print ("Extracting", "Testing")[testmode], "File resources..."
+		
+		for ote in direntries:
+			if ote == NULLK: continue
+			
+			first_fname = ''
+			for fres in direntries[ote]: # File Resources with the same hash (duplicates, links...)
+				# target pathname
+				if not testmode:
+					fname = os.path.join(args[2], directories[fres._parent][1:], fres.FileName)
+				else:
+					fname = os.path.join(directories[fres._parent][1:], fres.FileName)
+
+				if opts.exclude_list and is_excluded(fname, opts.exclude_list):
+					totalBytes += offset_table[ote].rhOffsetEntry.liOriginalSize
+					continue
+
+				# Expands the resource the first time, then duplicates or hardlinks it
+				if first_fname:
+					if fres.dwReparseReserved:
+						if sys.platform in ('win32', 'cygwin'):
+							#~ os.remove(fname) # can't make the hard link if the file pre exists!
+							if windll.kernel32.CreateHardLinkW(fname, first_fname, 0): # no Admin required!
+								logging.debug("Duplicate File resource: '%s' hard linked to '%s'", fname, first_name)
+						else:
+							os.link(fname, first_fname)
+					else:
+						shutil.copy(first_fname, fname)
+						logging.debug("Duplicate File resource: copied '%s' to '%s'", first_fname, fname)
+				else:
+					is_good, file_res = get_resource(fpi, offset_table[ote], testmode, fname)
+					logging.debug("File resource '%s' expanded", fres.FileName)
+
+					if not is_good:
+						badfiles += 1
+						print "File '%s' corrupted!" % fname
+						logging.debug("CRC error for %s", fname)
+					# ImageX puts symlink data in the STREAMENTRY, but accepts them in the DIRENTRY, too!
+					if isinstance(fres, StreamEntry):
+						dwReparseReserved = fres.parent.dwReparseReserved
+						dwAttributes = fres.parent.dwAttributes
+					else:
+						dwAttributes = fres.dwAttributes
+						dwReparseReserved = fres.dwReparseReserved
+					# Pre-processes symbolic links and junctions
+					if dwAttributes & 0x400 and sys.platform in ('win32', 'cygwin'):
+						bRelative, sn, pn = ParseReparseBuf(open(file_res.name,'rb').read(32768), dwReparseReserved)
+						file_res.close()
+						if dwReparseReserved == 0xA000000C:
+							dwFlags = bool(dwAttributes & 0x10)
+							# Requires Admin privileges! Can't create if it pre-exists!
+							if os.path.exists(fname) and os.path.isfile(fname): os.remove(fname)
+							if not bRelative:
+								sn = os.path.join(os.path.abspath(args[2]), sn[7:])
+								logging.debug("Fixed absolute path string into %s", sn)
+							if windll.kernel32.CreateSymbolicLinkW(fname, sn, dwFlags):
+								logging.debug("Successfully created symbolic link %s => %s", fname, sn)
+							else:
+								logging.debug("Can't create symbolic link %s => %s", fname, sn)
+						elif dwReparseReserved == 0xA0000003:
+							sn = os.path.join(os.path.abspath(args[2]), sn[7:])
+							if os.path.exists(fname) and os.path.isfile(fname): os.remove(fname)
+							if not os.path.exists(fname): os.makedirs(fname)
+							#~ os.remove(fname)
+							# Admin rights not required!
+							if MakeReparsePoint(dwReparseReserved, os.path.abspath(fname), sn):
+								logging.debug("Successfully created junction %s => %s", fname, sn)
+							else:
+								logging.debug("Can't create junction %s => %s", fname, sn)
+					elif dwAttributes & 0x400:
+						os.symlink(fname, first_fname)
+
+				totalBytes += offset_table[ote].rhOffsetEntry.liOriginalSize
+				print_progress(application_start_time, totalBytes, totalOutputBytes)			
+
+				if testmode:
+					continue
+				else:
+					total_restored_files += 1
+					first_fname = fname
+
+		# Restores times, file and security attributes in one pass
+		if not testmode:
+			# It fails on the root: WHY? Reverse order! (DIRs last)
+			print "Restoring file attributes..."
+			for ote in direntries:
+				for fres in direntries[ote]:
+					fname = os.path.join(args[2], directories.get(fres._parent, '')[1:], fres.FileName)
+					if opts.exclude_list and is_excluded(fname, opts.exclude_list):
 						continue
-			else:
-				copy(file_res, None)
-				fname = direntries[ote.bHash][0].FileName
-				
-			totalBytes += ote.rhOffsetEntry.liOriginalSize
-			print_progress(StartTime, totalBytes, totalOutputBytes)			
-			if file_res.sha1.digest() != ote.bHash:
-				badfiles += 1
-				print "File '%s' corrupted!", fname
-				logging.debug("CRC error for %s", fname)
-			else:
-				logging.debug("Good CRC for %s", fname)
+					if sys.platform in ('win32', 'cygwin'):
+						windll.kernel32.SetFileAttributesW(fname, fres.dwAttributes)
+						security.apply(fres.dwSecurityId, fname)
+					if hasattr(fres, 'liLastWriteTime'): # ADS haven't all attributes
+						touch(fname, fres.liLastWriteTime, fres.liCreationTime, fres.liLastAccessTime)
 
 		if badfiles:
 			print "%d/%d corrupted files detected." % (badfiles,len(direntries))

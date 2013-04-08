@@ -3,7 +3,7 @@ SWIMMI.PY - Part of Super Simple WIM Manager
 Info module
 '''
 
-VERSION = '0.26'
+VERSION = '0.27'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
@@ -23,6 +23,8 @@ def list(opts, args):
 	wim = get_wimheader(fpi)
 
 	COMPRESSION_TYPE = get_wim_comp(wim)
+
+	Codecs.Codec = CodecMT(opts.num_threads, COMPRESSION_TYPE)
 
 	offset_table = get_offsettable(fpi, wim)
 
@@ -46,7 +48,8 @@ def list(opts, args):
 	img_index -= 1
 	image = images[img_index]
 	
-	metadata = get_metadata(fpi, image, COMPRESSION_TYPE)
+	print "Opening Metadata resource..."
+	metadata = get_metadata(fpi, image)
 
 	direntries, directories = get_direntries(metadata)
 	

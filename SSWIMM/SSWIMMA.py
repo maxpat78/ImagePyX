@@ -3,7 +3,7 @@ SWIMMA.PY - Part of Super Simple WIM Manager
 Appender module
 '''
 
-VERSION = '0.26'
+VERSION = '0.27'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
@@ -44,6 +44,13 @@ def append(opts, args):
 
 	COMPRESSION_TYPE = get_wim_comp(wim)
 
+	Codecs.Codec = CodecMT(opts.num_threads, COMPRESSION_TYPE)
+
+	if opts.threshold:
+		Codecs.Codec.threshold_size = opts.threshold.size
+		Codecs.Codec.threshold_ratio = opts.threshold.ratio
+		Codecs.Codec.threshold_ratio = opts.threshold.ratio
+
 	offset_table = get_offsettable(out, wim)
 	images = get_images(out, wim)
 	
@@ -74,30 +81,26 @@ def append(opts, args):
 	image_start = out.tell()
 	logging.debug("Image start @%08X", image_start)
 
+	# 3 - Image Metadata
 	meta = tempfile.TemporaryFile()
-	cout = OutputStream(meta, metadata_size, COMPRESSION_TYPE)
 
-	cout.write(sd_raw)
+	# 3.1 - Security block
+	meta.write(sd_raw)
 
-	dirCount, fileCount, hardlinksBytes = write_direntries(cout, entries, subdirs, srcdir)
+	# 3.2 - Direntries
+	dirCount, fileCount, hardlinksBytes = write_direntries(meta, entries, subdirs, srcdir)
 
+	meta_size = meta.tell() # uncomp/comp size
 	meta.seek(0)
-	if cout.sha1.digest() in offset_table:
+	Codecs.Codec.compress(meta, out, meta_size, True)
+
+	crc = Codecs.Codec.sha1.digest()
+	if crc in offset_table:
 		print "No files to add, image is equal to another one!"
 		logging.debug("Image already stored, merging the Metadata!")
 		image_already_stored = True
 	else:
 		image_already_stored = False
-		# Restores the uncompressed Metadata if it didn't get smaller
-		if cout.csize() >= metadata_size:
-			cinp = InputStream(meta, metadata_size, cout.csize(), COMPRESSION_TYPE)
-			cout = OutputStream(out, metadata_size, 0)
-			copy(cinp, cout)
-			logging.debug("Restored the uncompressed Metadata")
-		else:
-			cout2 = OutputStream(out, metadata_size, 0)
-			copy(meta, cout2)
-			logging.debug("Copied the compressed Metadata")
 
 	StopTime = time.time()
 
@@ -105,9 +108,8 @@ def append(opts, args):
 	wim.rhOffsetTable.liOffset = out.tell()
 	logging.debug("Writing Offset table @0x%08X", wim.rhOffsetTable.liOffset)
 	if not image_already_stored:
-		images += [make_offsetimage(cout, image_start)]
+		images += [make_offsetimage(Codecs.Codec, image_start)]
 	else:
-		crc = cout.sha1.digest()
 		for i in range(len(images)):
 			if images[i].bHash == crc:
 				images.append(images[i])

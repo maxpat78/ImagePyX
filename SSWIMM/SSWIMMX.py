@@ -3,7 +3,7 @@ SWIMMX.PY - Part of Super Simple WIM Manager
 Exporter module
 '''
 
-VERSION = '0.26'
+VERSION = '0.27'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
@@ -33,6 +33,8 @@ def export(opts, args):
 	wim = get_wimheader(fpi)
 
 	COMPRESSION_TYPE = get_wim_comp(wim)
+
+	Codecs.Codec = CodecMT(opts.num_threads, COMPRESSION_TYPE)
 
 	offset_table = get_offsettable(fpi, wim)
 	
@@ -83,7 +85,7 @@ def export(opts, args):
 		logging.debug("Exporting of Image #%d started...", new_wim.dwImageCount)
 		
 		print "Opening Metadata resource..."
-		metadata = get_metadata(fpi, image, COMPRESSION_TYPE)
+		metadata = get_metadata(fpi, image)
 
 		print "Opening DIRENTRY table..."
 		direntries, directories = get_direntries(metadata)
@@ -93,6 +95,7 @@ def export(opts, args):
 				dirCount = int(node.find('DIRCOUNT').text)
 				fileCount = int(node.find('FILECOUNT').text)
 				imgTotalBytes = int(node.find('TOTALBYTES').text)
+				hardlinksBytes = int(node.find('HARDLINKBYTES').text)
 				if node.find('NAME'):
 					opts.image_name = node.find('NAME').text
 				if node.find('DESCRIPTION'):
@@ -150,7 +153,7 @@ def export(opts, args):
 		print "Building the XML Data..."
 		new_wim.rhXmlData.liOffset = fpo.tell()
 
-		xml_data = make_xmldata(new_wim.rhXmlData.liOffset, dirCount, fileCount, imgTotalBytes, StartTime, StopTime, index=new_wim.dwImageCount, xml=xml_data, imgname=opts.image_name, imgdsc=opts.image_description)
+		xml_data = make_xmldata(new_wim.rhXmlData.liOffset, dirCount, fileCount, imgTotalBytes, hardlinksBytes, StartTime, StopTime, index=new_wim.dwImageCount, xml=xml_data, imgname=opts.image_name, imgdsc=opts.image_description)
 		write_xmldata(new_wim, fpo, xml_data)
 
 		logging.debug("Exporting of Image #%d finished...", new_wim.dwImageCount)

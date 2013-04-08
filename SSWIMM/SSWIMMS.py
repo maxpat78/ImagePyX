@@ -3,14 +3,16 @@ SWIMMS.PY - Part of Super Simple WIM Manager
 Splitter module
 '''
 
-VERSION = '0.26'
+VERSION = '0.27'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
 
+import glob
 import hashlib
 import logging
 import os
+import re
 import Queue
 import struct
 import sys
@@ -36,6 +38,39 @@ def new_swm(wim, base_name, swm_index):
 	return swm
 
 	
+def swm_open_set(pathname):
+	base = os.path.basename(pathname).lower()
+	for i in range(len(base)):
+		if base[i].isdigit():
+			base = base[:i]
+			break
+	if base.lower().endswith('.swm'):
+		base = base[:-4]
+	swm_set = {}
+	found_comp = 0
+	swm_set_GUID = 0
+	swm_units = glob.glob(os.path.join(os.path.dirname(pathname), base+'*.swm'))
+	for swm in swm_units:
+		fp = open(swm, 'rb')
+		logging.debug('Opened SWM unit %s', fp.name)
+		wim = get_wimheader(fp)
+		COMPRESSION_TYPE = get_wim_comp(wim)
+		if found_comp and found_comp != COMPRESSION_TYPE:
+			print "Can't have SWM units with different compression types!"
+			sys.exit(1)
+		if wim.usTotalParts > len(swm_units):
+			print "Can't find all required SWM units"
+		if swm_set_GUID and wim.gWIMGuid != swm_set_GUID:
+			print "Bad GUID found for SWM unit %s!" % fp.name
+			sys.exit(1)
+		found_comp = COMPRESSION_TYPE
+		swm_set_GUID = wim.gWIMGuid
+		offset_table = get_offsettable(fp, wim)
+		swm_set[fp] = (wim, offset_table)
+		if fp.name == base+'.swm':
+			swm_set['base'] = swm_set[fp]
+	return swm_set
+
 def split(opts, args):
 	RefCounts = OrderedDict()
 	

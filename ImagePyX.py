@@ -3,7 +3,7 @@ ImagePyX.py - Super Simple WIM Manager
 Driver main module
 '''
 
-VERSION = '0.26'
+VERSION = '0.27'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
@@ -36,19 +36,25 @@ if __name__ == '__main__':
 	par.add_option("--dir", const=8, action="store_const", dest="sub_module", help="list the image contents")
 	par.add_option("--delete", const=9, action="store_const", dest="sub_module", help="delete an image from WIM archive")
 	par.add_option("--export", const=10, action="store_const", dest="sub_module", help="export an image or all images to a WIM archive")
-	par.add_option("-c", "--compress", dest="compression_type", help="select a compression type between none (default), XPRESS, LZX", metavar="COMPRESSION", default="none")
+	par.add_option("-c", "--compress", dest="compression_type", help="select a compression type between none, XPRESS (default), LZX", metavar="COMPRESSION", default="xpress")
 	par.add_option("-n", "--name", dest="image_name", help="set an Image name in XML data", metavar="NAME", default=None)
 	par.add_option("-d", "--description", dest="image_description", help="set an Image description in XML data", metavar="DESC", default=None)
 	par.add_option("-x", "--exclude", action="append", dest="exclude_list", help="set files and folders to exclude from capture (wildcards are accepted)", metavar="FILES", default=None)
 	par.add_option("--xf", "--exclude-file", dest="exclude_file", help="read from a file a list of files and folders to exclude from capture (wildcards are accepted)", metavar="FILE", default=None)
 	par.add_option("--debug", action="store_true", dest="debug", help="turn on debug logging to SSWIMM.log", metavar="DEBUG_LOG", default=False)
 	par.add_option("--check", action="store_true", dest="integrity_check", help="add integrity check data to image", default=False)
+	par.add_option("--threads", dest="num_threads", type="int", help="specify the number of threads used for the (de)compression", default=2)
+	par.add_option("--threshold", dest="threshold", type="string", help="instructs to abort compression if gain is less than RATIO after a specified amount 1/N of input has been processed and stream is greater than SIZE chunks\n\ni.e.: '--threshold=320,2,0.01' aborts if gain is < 1% after the 1/2 of a stream of at least 320 chunks (10 MiB) has been processed", metavar="SIZE,N,RATIO")
 	opts, args = par.parse_args()
 
 	if not opts.sub_module:
 		print "You must specify an operation to carry out!\n"
 		par.print_help()
 		sys.exit(1)
+
+	if opts.threshold:
+		size, chunks, ratio = opts.threshold.split(',')
+		opts.threshold.size, opts.threshold.chunks, opts.threshold.ratio = int(size), int(chunks), float(ratio)
 
 	if opts.debug:
 		logging.basicConfig(level=logging.DEBUG, filename='SSWIMM.log', filemode='w')

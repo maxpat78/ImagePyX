@@ -1,15 +1,14 @@
-# -*- coding: mbcs -*-
-
 '''
 WIMArchive.PY - Part of Super Simple WIM Manager
 Common structures and functions
 '''
 
-VERSION = '0.26'
+VERSION = '0.27'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
 
+import Codecs
 import copy
 import datetime
 import hashlib
@@ -60,6 +59,25 @@ def ux2nttime(t):
 	"Converts date/time from Unix into NT"
 	return int((t+11644473600L)*10000000L)
 
+def take_sha(pathname, _blklen=32*1024, first_chunk=False):
+	"Calculates the SHA-1 for file contents"
+	pos = -1
+	if type(pathname) in (type(''), type(u'')):
+		fp = open(pathname, 'rb')
+	else:
+		fp = pathname
+		pos = fp.tell()
+	sha = hashlib.sha1()
+	while 1:
+		s = fp.read(_blklen)
+		sha.update(s)
+		if len(s) < _blklen or first_chunk: break
+	if pos > -1:
+		fp.seek(pos)
+	if first_chunk or pos == -1:
+		fp.seek(0)
+	return fp, sha.digest()
+
 def touch(pathname, WTime, CTime, ATime):
 	if sys.platform not in ('win32', 'cygwin'):
 		os.utime(pathname, (nt2uxtime(ATime), nt2uxtime(WTime)))
@@ -73,7 +91,6 @@ def touch(pathname, WTime, CTime, ATime):
 	WTime = c_ulonglong(WTime)
 	if not windll.kernel32.SetFileTime(hFile, byref(CTime), byref(ATime), byref(WTime)):
 		logging.debug("Can't apply datetimes to '%s'!", pathname)
-		return
 	windll.kernel32.CloseHandle(hFile)
 
 def IsReparsePoint(pathname):
@@ -108,15 +125,16 @@ def IsHardlinkedFile(pathname):
         windll.kernel32.CloseHandle(hFile)
         if hfi.nNumberOfLinks > 1:
             return hfi.nFileIndexLow, hfi.nFileIndexHigh # FileIndex
+    windll.kernel32.CloseHandle(hFile)
     return None
 
 def GetReparsePointTag(pathname):
 	"Retrieves the IO_REPARSE_TAG associated with a reparse point"
-	print pathname.encode('mbcs')
+	#~ print pathname.encode('mbcs')
 	wfd = WIN32_FIND_DATA()
 	h = windll.kernel32.FindFirstFileW(pathname, byref(wfd))
 	windll.kernel32.CloseHandle(h)
-	print hex(wfd.dwReserved0)
+	#~ print hex(wfd.dwReserved0)
 	logging.debug("Found %s on %s", {0xA000000C:'IO_REPARSE_TAG_SYMLINK',0xA0000003:'IO_REPARSE_TAG_MOUNT_POINT'}[wfd.dwReserved0], wfd.cFileName)
 	return wfd.dwReserved0
 
@@ -195,16 +213,47 @@ def GetReparsePointData(pathname, srcdir):
 			return Flags, s
 	return None
 
+class myTokenPriv(Structure):
+	_pack_ = 1
+	_fields_ = [
+	('dwCount', c_ulong),
+	('luid', c_ulonglong),
+	('dwAttributes', c_ulong)]
+
+def AcquirePrivilege(privilege):
+    "Acquires a privilege to the Python process"
+    if sys.platform not in ('win32', 'cygwin'): return 0
+    hToken = c_int()
+    TOKEN_QUERY, TOKEN_ADJUST_PRIVILEGES = 0x8, 0x20
+    ret = windll.advapi32.OpenProcessToken(windll.kernel32.GetCurrentProcess(),TOKEN_ADJUST_PRIVILEGES|TOKEN_QUERY, byref(hToken))
+    if not ret: return ret
+    LUID = c_ulonglong()
+    ret = windll.advapi32.LookupPrivilegeValueA(0, privilege, byref(LUID))
+    if not ret: return ret
+    tkp = myTokenPriv()
+    tkp.dwCount = 1
+    tkp.luid = LUID
+    tkp.dwAttributes = 2 # SE_PRIVILEGE_ENABLED
+    ret = windll.advapi32.AdjustTokenPrivileges(hToken, 0, byref(tkp), sizeof(tkp), 0, 0)
+    if not ret or windll.kernel32.GetLastError():
+        logging.debug("Privilege %s not acquired!", privilege)
+    return ret
+
 def print_progress(start_time, totalBytes, totalBytesToDo):
 	"Prints a progress string"
 	pct_done = 100*float(totalBytes)/float(totalBytesToDo)
-	avg_secs_remaining = (time.time() - start_time) / pct_done * 100 - (time.time() - start_time)
+	# Limits console output to 1 print per second, beginning after 50% progress
+	if pct_done < 50 or (time.time() - print_progress.last_print) < 1: return
+	print_progress.last_print = time.time()
+	avg_secs_remaining = (print_progress.last_print - start_time) / pct_done * 100 - (print_progress.last_print - start_time)
 	avg_secs_remaining = int(avg_secs_remaining)
 	if avg_secs_remaining < 61:
 		s = '%d secs' % avg_secs_remaining
 	else:
-		s = '%d:%02d' % (avg_secs_remaining/60, avg_secs_remaining%60)
-	sys.stdout.write('%.02f%% done, %s left          \r' % (pct_done, s))
+		s = '%d:%02d mins' % (avg_secs_remaining/60, avg_secs_remaining%60)
+	sys.stdout.write('%d%% done, %s left          \r' % (pct_done, s))
+
+print_progress.last_print = 0
 
 def print_timings(start, stop):
 	print "Done. %s time elapsed." % datetime.timedelta(seconds=int(stop-start))
@@ -224,73 +273,6 @@ def get_wim_comp(wim):
 		COMPRESSION_TYPE = 2
 	print "Compression is", ('none', 'XPRESS', 'LZX')[COMPRESSION_TYPE]
 	return COMPRESSION_TYPE
-
-
-class RtlXpressCodec:
-	"Performs XPRESS Huffman (de)compression with Windows 8 NTDLL"
-	def __init__(self):
-		logging.debug("Using NT Xpress codec")
-		CompressBufferWorkSpaceSize, CompressFragmentWorkSpaceSize = c_uint(), c_uint()
-		windll.ntdll.RtlGetCompressionWorkSpaceSize(0x104, byref(CompressBufferWorkSpaceSize), byref(CompressFragmentWorkSpaceSize))
-		self.workspace = max(CompressBufferWorkSpaceSize.value, CompressFragmentWorkSpaceSize.value)
-		self.workspace = create_string_buffer(self.workspace)
-	
-	def compress(self, ins, cbins, outs, cbouts):
-		comp_len = c_int()
-		assert not windll.ntdll.RtlCompressBuffer(4, ins, cbins, outs, cbouts, 4096, byref(comp_len), self.workspace)
-		return comp_len.value
-		
-	def decompress(self, ins, cbins, outs, cbouts):
-		uncomp_len = c_int()
-		# Warning! cbouts (output buffer size) MUST be equal to the expected output size!
-		assert not windll.ntdll.RtlDecompressBufferEx(4, outs, cbouts, ins, cbins, byref(uncomp_len), self.workspace)
-		return uncomp_len.value
-
-class WimlibLZXCodec:
-	"Performs LZX (de)compression with wimlib"
-	def __init__(self):
-		logging.debug("Using Wimlib LZX codec")
-	
-	def compress(self, ins, cbins, outs, cbouts):
-		comp_len = c_int()
-		cdll.wimlib.lzx_compress(ins, cbins, outs, byref(comp_len))
-		return comp_len.value
-		
-	def decompress(self, ins, cbins, outs, cbouts):
-		cdll.wimlib.lzx_decompress(ins, cbins, outs, cbouts)
-		return cbouts
-
-class WimlibXpressCodec:
-	"Performs Xpress Huffman (de)compression with wimlib"
-	def __init__(self):
-		logging.debug("Using Wimlib Xpress codec")
-	
-	def compress(self, ins, cbins, outs, cbouts):
-		comp_len = c_int()
-		cdll.wimlib.xpress_compress(ins, cbins, outs, byref(comp_len))
-		return comp_len.value
-		
-	def decompress(self, ins, cbins, outs, cbouts):
-		cdll.wimlib.xpress_decompress(ins, cbins, outs, cbouts)
-		return cbouts
-
-class MSCompressionLZXCodec:
-	"Performs LZX (de)compression with MSCompression"
-	def __init__(self):
-		logging.debug("Using MSCompression LZX codec")
-
-	compress = cdll.MSCompression.lzx_wim_compress
-
-	decompress = cdll.MSCompression.lzx_wim_decompress
-	
-class MSCompressionXpressCodec:
-	"Performs Xpress Huffman (de)compression with MSCompression"
-	def __init__(self):
-		logging.debug("Using MSCompression Xpress codec")
-	
-	compress = cdll.MSCompression.xpress_huff_compress
-
-	decompress = cdll.MSCompression.xpress_huff_decompress
 
 
 class BadWim(Exception):
@@ -337,6 +319,9 @@ class WIMHeader:
 	def __str__ (self):
 		return class2str(self, "WIM Header @%x\n" % self._pos)
 
+	def __repr__ (self):
+		return class2str(self, "WIM Header @%x\n" % self._pos)
+
 	def test(self):
 		if self.ImageTag != 'MSWIM\0\0\0' or self.cbSize != 208:
 			raise BadWim
@@ -377,6 +362,7 @@ class SecurityData:
 			self._vk[v[0]] = k
 		self.dwTotalLength = 8 # initial size (empty object)
 		self.size = self.dwTotalLength
+		self.SeSecurityPrivilege = AcquirePrivilege("SeSecurityPrivilege")
 		
 	__getattr__ = common_getattr
 	
@@ -409,9 +395,12 @@ class SecurityData:
 			return -1
 		lpLenNeeded = c_int()
 		# OWNER_SECURITY_INFORMATION=1 GROUP_SECURITY_INFORMATION=2 DACL_SECURITY_INFORMATION=4
-		windll.advapi32.GetFileSecurityW(pathname, 7, None, None, byref(lpLenNeeded))
+		SecurityInfo = 7
+		if self.SeSecurityPrivilege:
+			SecurityInfo |= 8 # SACL_SECURITY_INFORMATION
+		windll.advapi32.GetFileSecurityW(pathname, SecurityInfo, None, None, byref(lpLenNeeded))
 		s = create_string_buffer(lpLenNeeded.value)
-		ret = windll.advapi32.GetFileSecurityW(pathname, 7, s, lpLenNeeded.value, byref(lpLenNeeded))
+		ret = windll.advapi32.GetFileSecurityW(pathname, SecurityInfo, s, lpLenNeeded.value, byref(lpLenNeeded))
 		ind = -1
 		if ret and windll.advapi32.IsValidSecurityDescriptor(s):
 			sha1 = hashlib.sha1(s).digest()
@@ -433,7 +422,10 @@ class SecurityData:
 			return
 		if index > -1 and index < len(self.SDS):
 			sd = self.SDS.keys()[index]
-			if not windll.advapi32.SetFileSecurityW(pathname, 7, self.SDS[sd]):
+			SecurityInfo = 7
+			if self.SeSecurityPrivilege:
+				SecurityInfo |= 8 # SACL_SECURITY_INFORMATION
+			if not windll.advapi32.SetFileSecurityW(pathname, SecurityInfo, self.SDS[sd]):
 				logging.debug("Error restoring SD on '%s'", pathname)
 
 	def length(self):
@@ -609,6 +601,9 @@ class OffsetTableEntry:
 	def __str__ (self):
 		return class2str(self, "OffsetTable @%x\n" % self._pos)
 
+	def __repr__ (self):
+		return class2str(self, "OffsetTable @%x\n" % self._pos)
+
 	def tostr (self):
 		s = ''
 		keys = self._kv.keys()
@@ -657,220 +652,3 @@ class IntegrityTable:
 		for k in self.Entries:
 			s += k
 		return s
-
-
-class InputStream:
-	def __init__ (self, fp, size, csize, compressionType=0):
-		self.fp = fp # input file
-		self._pos = fp.tell() # compressed stream start offset
-		self.sha1 = hashlib.sha1() # SHA-1 of the uncompressed input
-		self.size = size # total uncompressed data size
-		self.compressionType = compressionType # 0=none, 1=XPRESS, 2=LZX
-		logging.debug("New InputStream %d/%d/%d", size, csize, compressionType)
-		if compressionType: self.__init_comp(csize, compressionType)
-
-	def read(self, size=None):
-		if size < 1: return ''
-		if size == None or size > self.size: # read all
-			size = self.size
-		if self.fp.tell() >= self._pos + self.size:
-			return ''
-		if self.fp.tell() + size >= self._pos + self.size:
-			size = self._pos + self.size - self.fp.tell()
-			logging.debug("size adjusted to %d bytes", size)
-		s = self.fp.read(size)
-		self.sha1.update(s)
-		logging.debug("Read %d bytes of %d", len(s), size)
-		return s
-
-	def __init_comp(self, csize, compressionType):
-		self._ibuf = '' # 32K input buffer
-		self._obuf = create_string_buffer(32768+6144) # output buffer
-		self._blks = (self.size+32767)/32768 - 1# number of input/output blocks
-		self._iblk = 0 # current input block index
-		self._ipos = 0 # current input block offset
-		self._opos = 0 # current output stream offset
-		self.csize = csize # total compressed data size (with chunk pointers)
-		if self.compressionType == 1:
-			if sys.platform == 'win32':
-				V = sys.getwindowsversion()
-				if V.major >= 6 and V.minor >= 2:
-					self.decompress = RtlXpressCodec().decompress
-				else:
-					if 0:
-						self.decompress = MSCompressionXpressCodec().decompress
-					else:
-						self.decompress = WimlibXpressCodec().decompress
-		elif self.compressionType == 2:
-			if 0:
-				self.decompress = MSCompressionLZXCodec().decompress
-			else:
-				self.decompress = WimlibLZXCodec().decompress
-		self.read = self.__read_comp
-		
-	def __read_comp(self, size=None): # TODO: QWORD if source > 4GiB, DWORD else
-		if size == None: # read all
-			size = self.size
-		if size < 1: return ''
-
-		i, todo = 0, size
-		s = '' # temp output buffer
-		while todo > 0:
-			if self._iblk < self._blks: # the last pointer is computed from original size
-				self.fp.seek(self._pos + self._iblk*4) # current pointer
-				logging.debug("Read chunk pointer @%08X", self._pos + self._iblk*4)
-				prev_cb = 0
-				if self._iblk > 0:
-					self.fp.seek(self._pos + self._iblk*4 - 4) # prev chunk pointer
-					prev_cb = struct.unpack('<I', self.fp.read(4))[0]
-				cb = struct.unpack('<I', self.fp.read(4))[0] - prev_cb
-			else:
-				cb = self.csize - self._blks*4 - self._ipos
-				#~ print self._opos, self.size
-			assert cb < 32769
-			logging.debug("Bytes requested: %d", cb)
-			self.fp.seek(self._pos + self._blks*4 + self._ipos) # current input block offset
-			self._ibuf = self.fp.read(cb)
-			self._ipos += cb # next chunk offset
-			if cb == 32768 or cb == self.size - self._opos:
-				s += self._ibuf
-				self._opos += len(self._ibuf)
-				logging.debug("Read uncompressed chunk %d/%d @%08X", self._iblk, self._blks, self._pos + self._blks*4 + self._ipos)
-			elif 0 < cb < 32768 and cb != self.size - self._opos:
-				residual_uncompressed_bytes = self.size - self._opos
-				try:
-					# Rtl decompressor requires a buffer size equal to the requested output size!
-					cbo = self.decompress(self._ibuf, cb, self._obuf, (32768, residual_uncompressed_bytes)[residual_uncompressed_bytes < 32768])
-				except:
-					cbo = -1
-					logging.debug("FATAL: decompressor exception!")
-				if not cbo:
-					logging.debug("FATAL: zero bytes decompressed!")
-				elif self._iblk < self._blks and cbo < 32768:
-					logging.debug("FATAL: expanded non-last chunk <32768 bytes!")
-				s += self._obuf[:cbo]
-				self._opos += cbo
-				logging.debug("Read compressed chunk %d/%d @%08X, size %d expanded to %d", self._iblk, self._blks, self._pos + self._blks*4 + self._ipos, cb, cbo)
-			self._iblk += 1
-			todo -= 32768
-			i += 32768
-		self.sha1.update(s)
-		return s
-		
-	def start(self): return self._pos # compressed stream start offset
-
-	def csize(self):
-		if self.compressionType:
-			logging.debug("Compressed input stream size: %d (%d%%)", self._blks*4 + self._ipos, -1*(100-(self._blks*4 + self._ipos)*100/self.size))
-			return self._blks*4 + self._ipos # compressed stream size
-		else:
-			return self.size
-
-
-class OutputStream:
-	"Creates a file resource, both compressed or uncompressed, computing sizes and SHA-1 checksum"
-	def __init__ (self, fp, size, compressionType=0, takeSHA=True):
-		self.fp = fp # output file
-		self._pos = fp.tell() # compressed stream start offset
-		self.sha1 = hashlib.sha1() # SHA-1 of the uncompressed input
-		self.takeSHA = takeSHA
-		self.size = size # total uncompressed data size
-		self.compressionType = compressionType # 0=none, 1=XPRESS, 2=LZX
-		logging.debug("New OutputStream %d/%d", size, compressionType)
-		if compressionType: self.__init_comp(compressionType)
-
-	def write(self, s):
-		if self.takeSHA: self.sha1.update(s)
-		self.fp.write(s)
-		
-	def flush(self):
-		self.fp.flush()
-		
-	def __init_comp(self, compressionType):
-		self._ibuf = StringIO() # 32K input buffer
-		self._obuf = create_string_buffer(32768+6144) # output buffer
-		self._blks = (self.size+32767)/32768 - 1# number of input/output blocks
-		self._iblk = 0 # current output block index
-		self._ipos = 0 # current output block offset
-		if self.compressionType == 1:
-			if sys.platform == 'win32':
-				V = sys.getwindowsversion()
-				if V.major >= 6 and V.minor >= 2:
-					self.compress = RtlXpressCodec().compress
-				else:
-					if 0:
-						self.compress = MSCompressionXpressCodec().compress
-					else:
-						self.compress = WimlibXpressCodec().compress
-		elif self.compressionType == 2:
-			if 0:
-				self.compress = MSCompressionLZXCodec().compress
-			else:
-				self.compress = WimlibLZXCodec().compress
-		self.write = self.__write_comp
-		self.flush = self.__flush_comp
-
-	def __check_zero_or_bust(self, cb):
-		if cb == 0:
-			logging.debug("WARNING: compressor failed, zero bytes returned!")
-		else:
-			logging.debug("WARNING: compressor returned too many (%d) bytes.", cb)
-		
-	def __write_comp(self, s): # TODO: QWORD if source > 4GiB, DWORD else
-		if self.takeSHA: self.sha1.update(s)
-		self._ibuf.write(s)
-		if self._ibuf.tell() < 32768: return
-		
-		i, todo = 0, self._ibuf.tell()
-		self._ibuf.seek(0)
-		while todo >= 32768:
-			u_chunk = self._ibuf.read(32768)
-			cb = self.compress(u_chunk, 32768, self._obuf, 32768+6144)
-			self.fp.seek(self._pos + self._blks*4 + self._ipos) # compressed block start
-			if cb == 0 or cb >= 32768:
-				self.__check_zero_or_bust(cb)
-				logging.debug("Wrote uncompressed chunk %d/%d @%08X", self._iblk, self._blks, self._pos + self._blks*4 + self._ipos)
-				self.fp.write(u_chunk)
-				self._ipos += 32768
-			else:
-				logging.debug("Wrote compressed chunk %d/%d @%08X, size %d", self._iblk, self._blks, self._pos + self._blks*4 + self._ipos, cb)
-				self.fp.write(self._obuf[:cb])
-				self._ipos += cb
-			if self._iblk < self._blks: # the last pointer is computed from original size
-				self.fp.seek(self._pos + self._iblk*4) # chunk table item offset
-				self.fp.write(struct.pack('<I', self._ipos))
-				self.fp.seek(self._ipos) # check stream re-alignment!
-				logging.debug("Wrote chunk pointer @%08X", self._pos + self._iblk*4)
-			self._iblk += 1
-			todo -= 32768
-		rest = self._ibuf.read()
-		self._ibuf.seek(0)
-		self._ibuf.write(rest)
-		self._ibuf.truncate()
-		
-	def __flush_comp(self): # merge into __write_comp with a flush flag?
-		self._ibuf.seek(0)
-		rest = self._ibuf.read()
-		logging.debug("Flushing %d bytes", len(rest))
-		if rest:
-			cb = self.compress(rest, len(rest), self._obuf, 32768+6144)
-			self.fp.seek(self._pos + self._blks*4 + self._ipos)
-			if cb == 0 or cb >= len(rest):
-				self.__check_zero_or_bust(cb)
-				logging.debug("Last uncompressed chunk @%08X, size %d", self._pos + self._blks*4 + self._ipos, len(rest))
-				self.fp.write(rest)
-				self._ipos += len(rest)
-			else:
-				logging.debug("Last compressed chunk @%08X, size %d", self._pos + self._blks*4 + self._ipos, cb)
-				self.fp.write(self._obuf[:cb])
-				self._ipos += cb
-			self.fp.flush()
-
-	def start(self): return self._pos # compressed stream start offset
-
-	def csize(self):
-		if self.compressionType:
-			logging.debug("Compressed output stream size: %d (%d%%)", self._blks*4 + self._ipos, -1*(100-(self._blks*4 + self._ipos)*100/self.size))
-			return self._blks*4 + self._ipos # compressed stream size
-		else:
-			return self.size
