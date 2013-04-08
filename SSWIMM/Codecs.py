@@ -58,6 +58,8 @@ class WimlibCodec(BaseCodec):
 	"Performs XPRESS or LZX (de)compression with wimlib"
 	def __init__(self, codec=1):
 		try:
+			if 'linux' in sys.platform:
+				cdll.wimlib = cdll.LoadLibrary('wimlib.so') # we need to explicitly load
 			if codec != 2:
 				logging.debug("Using wimlib XPRESS codec")
 				self.co = cdll.wimlib.xpress_compress
@@ -100,6 +102,8 @@ class MSCompressionCodec(BaseCodec):
 	"Performs LZX or Xpress Huffman (de)compression with MSCompression"
 	def __init__(self, codec=1):
 		try:
+			if 'linux' in sys.platform:
+				cdll.MSCompression = cdll.LoadLibrary('MSCompression.so') # we need to explicitly load
 			if codec != 2:
 				logging.debug("Using MSCompression XPRESS codec")
 				self.co = cdll.MSCompression.xpress_huff_compress
@@ -130,6 +134,8 @@ class MSCompressionCodec(BaseCodec):
 class RtlXpressCodec(BaseCodec):
 	"Performs Xpress Huffman (de)compression with Windows 8 NTDLL"
 	def __init__(self, codec=1):
+		if sys.platform not in ('cygwin', 'win32'):
+			raise CodecException("Can't use NTDLL on non-Windows system!")
 		logging.debug("Using NT Xpress codec")
 		CompressBufferWorkSpaceSize, CompressFragmentWorkSpaceSize = c_uint(), c_uint()
 		windll.ntdll.RtlGetCompressionWorkSpaceSize(0x104, byref(CompressBufferWorkSpaceSize), byref(CompressFragmentWorkSpaceSize))
@@ -169,13 +175,12 @@ class CodecMT():
 		self.compressions_skipped = 0
 		
 		if compression == 1: # XPRESS
+			#~ self.codec = MSCompressionCodec
+			self.codec = WimlibCodec
 			if sys.platform == 'win32':
 				V = sys.getwindowsversion()
 				if V.major >= 6 and V.minor >= 2: # Win 8+
 					self.codec = RtlXpressCodec
-				else:
-					#~ self.codec = MSCompressionCodec
-					self.codec = WimlibCodec
 		elif compression == 2: # LZX
 			self.codec = WimlibCodec
 		else:
@@ -303,28 +308,31 @@ class CodecMT():
 			in_stream.seek((chunks-1)*n, 1)
 			prev_offset = 0
 		self.chunk = chunk = 0
-		while chunks: # Increase chunks read at once?
-			if self.codec != CopyCodec:
-				if chunks > 1:
-					pos = in_stream.tell()
-					#~ in_stream.seek(chunks_pos)
-					new_offset = struct.unpack(fmt, cin.read(n))[0]
-					#~ new_offset = struct.unpack(fmt, in_stream.read(n))[0]
-					#~ chunks_pos += n
-					in_stream.seek(pos)
-					BLK = new_offset - prev_offset # next chunk length
-					prev_offset = new_offset
-				else:
-					BLK = in_size - (in_stream.tell() - start_pos)
-			s = in_stream.read(BLK)
-			chunk += 1
-			expanded_size = (32768, out_size%32768)[chunks == 1] or 32768
-			self.q_in.put((1, s, chunk, expanded_size))
-			#~ print chunk, chunks, BLK, expanded_size
+		while chunks:
+			# Multichunk approach seems faster!
+			for i in range(min(self.num_threads*16, chunks)):
+				if self.codec != CopyCodec:
+					if chunks > 1:
+						pos = in_stream.tell()
+						#~ in_stream.seek(chunks_pos)
+						new_offset = struct.unpack(fmt, cin.read(n))[0]
+						#~ new_offset = struct.unpack(fmt, in_stream.read(n))[0]
+						#~ chunks_pos += n
+						in_stream.seek(pos)
+						BLK = new_offset - prev_offset # next chunk length
+						prev_offset = new_offset
+					else:
+						BLK = in_size - (in_stream.tell() - start_pos)
+				s = in_stream.read(BLK)
+				chunk += 1
+				expanded_size = (32768, out_size%32768)[chunks == 1] or 32768
+				self.q_in.put((1, s, chunk, expanded_size))
+				chunks -= 1
+				#~ print chunk, chunks, BLK, expanded_size
 			while self.chunk < chunk:
 				continue
 			while not self.q_out.empty():
-				chunks -= 1
+				#~ chunks -= 1
 				i, s = self.q_out.get()
 				out_stream.write(s)
 				if self.take_sha:

@@ -88,7 +88,7 @@ if __name__ == '__main__':
 		if len(args) < 1:
 			print "You must specify a WIM file (and, optionally, an image index or name) to test!\n"
 			sys.exit(1)
-		extract_test(opts, args, True)
+		test(opts, args)
 	elif opts.sub_module == 5:
 		if len(args) < 2:
 			print "You must specify a WIM file to split and the maximum SWM unit size in megabytes!\n"
@@ -98,7 +98,7 @@ if __name__ == '__main__':
 		if len(args) < 3:
 			print "You must specify a WIM file and an image (by index or name) to apply, and a target folder!\n"
 			sys.exit(1)
-		extract_test(opts, args)
+		extract(opts, args)
 	elif opts.sub_module == 7:
 		if len(args) < 1:
 			print "You must specify a WIM file to show the XML data!\n"

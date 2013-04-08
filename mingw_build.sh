@@ -4,3 +4,4 @@
 # note: -O3 generates bad code (in lzx decompressor) with GCC 4.7
 #~ gcc -mdll -mwin32 -std=c99 -march=native -O2 -flto -finline-functions -funswitch-loops -I. -Wl,-s -Wl,-o,wimlib.dll lzx-compress.c compress.c lzx-common.c lz77.c lzx-decompress.c decompress.c xpress-compress.c xpress-decompress.c
 gcc -mdll -mwin32 -std=c99 -march=native -O3 -flto -I. -Wl,-s -Wl,-o,wimlib.dll lzx-compress.c compress.c lzx-common.c lz77.c lzx-decompress.c decompress.c xpress-compress.c xpress-decompress.c
+#~ gcc -std=c99 -march=i686 -fPIC -shared -Wl,-s -Wl,-soname,wimlib.so -Wl,-o,wimlib.so -O2 -flto -I. lzx-compress.c compress.c lzx-common.c lz77.c lzx-decompress.c decompress.c xpress-compress.c xpress-decompress.c

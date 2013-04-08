@@ -42,7 +42,7 @@ Look at REVISIONS.TXT for details about developement history and things to do.
 
 
 
-[1] Developed and tested on Windows with Python 2.7.3, 32-bit
+[1] Developed and tested on Windows with Python 2.7.3, 32-bit; partly tested with Linux Ubuntu 12.10
 
 [2] A simplified version with the codecs only can be built with GCC 4.7 on Windows: look at mingw_build.sh
 

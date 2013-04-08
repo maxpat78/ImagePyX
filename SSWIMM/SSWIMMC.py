@@ -55,10 +55,11 @@ def copyres(offset, size, fp_in, fp_out):
 
 def get_ads(pathname):
     "Returns the Alternate Data Streams for a file"
-    if sys.platform not in ('win32', 'cygwin'):
-        return None
-
     ads = []
+
+    if sys.platform not in ('win32', 'cygwin'):
+        return ads
+
     fsd = WIN32_FIND_STREAM_DATA()
     if not pathname: return ads
     # ImageX makes an unnamed data stream for the main contents, but

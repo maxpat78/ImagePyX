@@ -94,6 +94,9 @@ FEB 2012	Planning the WIM archive classes
 		fixed a bug with ADS and FAT32 FS
 		programmable threshold filter to abort compression when gain is very low
 		can get SeSecurityPrivilege/SeRestorePrivilege to handle SACL in SD (Windows)
+08.04.13 	splitted test and extract function to clearly improve test performances
+		restored MultiChunk(tm) in Codecs.decompression to speed up
+		minor fixes to run under Linux (tested with Ubuntu 12.10)
   
 
 
@@ -105,7 +108,6 @@ TODO
 - export with resource recompression
 - handle not accessible files (i.e. when Admin rights are required)
 - foreign SDs: have they to be restored?
-- test it under Linux
 - merge/read from multiple SWM
 - change image name/description in XML data with --info
 - optimization/cleanup of unused resources in an updated WIM
@@ -113,3 +115,6 @@ TODO
 - set FLAG_HEADER_RESOURCE_ONLY, FLAG_HEADER_METADATA_ONLY in WIM header
 - investigate around RESHDR_FLAG_FREE
 - compare valid WIM size with xmldata?
+- better test it under Linux:
+  + fix broken console progressive update
+  + check exhotic codepages ('mbcs')
