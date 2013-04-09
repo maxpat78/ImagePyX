@@ -26,8 +26,8 @@ On Windows, it can use the native RTL Xpress codec (8 only) and provides complet
 
 
 Useful links about WIM Images:
-	http://en.wikipedia.org/wiki/Windows_Imaging_Format
-	http://technet.microsoft.com/en-us/library/cc507842.aspx
+- http://en.wikipedia.org/wiki/Windows_Imaging_Format
+- http://technet.microsoft.com/en-us/library/cc507842.aspx
 
 
 FOLDER CONTENTS:
@@ -37,12 +37,13 @@ FOLDER CONTENTS:
 - REVISIONS.TXT		developement history and todo
 - gpl.txt		GPL v2 license file: it applies to this package
 - mingw_build.sh        script to help building a reduced wimlib under Windows
+- make_test.sh		sample minimal script to test under Linux
 
 Look at REVISIONS.TXT for details about developement history and things to do.
 
 
 
-[1] Developed and tested on Windows with Python 2.7.3, 32-bit; partly tested with Linux Ubuntu 12.10
+[1] Developed and tested on Windows with Python 2.7.3, 32-bit; partly tested with Linux Ubuntu 12.10, x32
 
 [2] A simplified version with the codecs only can be built with GCC 4.7 on Windows: look at mingw_build.sh
 

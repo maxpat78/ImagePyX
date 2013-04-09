@@ -3,7 +3,7 @@ WIMArchive.PY - Part of Super Simple WIM Manager
 Common structures and functions
 '''
 
-VERSION = '0.27'
+VERSION = '0.28'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
@@ -38,7 +38,8 @@ def class2str(c, s):
 
 def common_getattr(c, name):
 	"Decodes and stores an attribute according to the class layout"
-	i = c._vk[name]
+	#~ i = c._vk[name]
+	i = c._vk.get(name)
 	fmt = c._kv[i][1]
 	cnt = struct.unpack_from(fmt, c._buf, i+c._i) [0]
 	setattr(c, name,  cnt)
@@ -80,7 +81,10 @@ def take_sha(pathname, _blklen=32*1024, first_chunk=False):
 
 def touch(pathname, WTime, CTime, ATime):
 	if sys.platform not in ('win32', 'cygwin'):
-		os.utime(pathname, (nt2uxtime(ATime), nt2uxtime(WTime)))
+		try:
+			os.utime(pathname, (nt2uxtime(ATime), nt2uxtime(WTime)))
+		except:
+			logging.debug("Can't touch %s", pathname)
 		return
 	hFile = windll.kernel32.CreateFileW(pathname, 0x0100, 0, 0, 3, 0x02000000, 0)
 	if hFile == -1:
@@ -473,7 +477,7 @@ class DirEntry:
 	__getattr__ = common_getattr
 	
 	def __str__ (self):
-		return class2str(self, "DirEntry @%x\n" % self._pos) + '66: sFileName = %s' % self.FileName.encode('mbcs')
+		return class2str(self, "DirEntry @%x\n" % self._pos) + '66: sFileName = %s' % self.FileName.encode('utf8')
 
 	def tostr (self):
 		s = ''

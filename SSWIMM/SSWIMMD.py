@@ -3,7 +3,7 @@ SWIMMD.PY - Part of Super Simple WIM Manager
 Decompressor module
 '''
 
-VERSION = '0.27'
+VERSION = '0.28'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
@@ -105,6 +105,8 @@ def get_resource(fpi, ote, null=False, target=None):
 def get_securitydata(fp):
 	"Build the SecurityData hash table"
 	sd = SecurityData(255*'\0')
+	if sys.platform not in ('win32', 'cygwin'):
+		return sd
 	fp.seek(0)
 	sd_size = struct.unpack('<I', fp.read(4))[0]
 	sd_nument = struct.unpack('<I', fp.read(4))[0]
@@ -166,7 +168,7 @@ def get_direntries(fp):
 			# A symlink to a directory isn't a real directory; a junction is
 			if d.dwAttributes & 0x10 and d.dwReparseReserved != 0xA000000C:
 				if d.FileName == '':
-					fname = '\\'
+					fname = os.sep
 				else:
 					fname = d.FileName
 				fname = os.path.join(directories.get(parent,''), fname)
@@ -426,7 +428,8 @@ def extract(opts, args):
 		
 		# Recreates the target directory tree and the empty files
 		for fres in direntries[NULLK]:
-			fname = os.path.join(args[2], directories.get(fres._parent, " ")[1:], fres.FileName)
+			if not hasattr(fres, 'dwAttributes'): continue # skips STREAMs
+			fname = os.path.join(args[2], directories.get(fres._parent, "")[1:], fres.FileName)
 			if opts.exclude_list and is_excluded(fname, opts.exclude_list):
 				continue
 			if fres.dwAttributes & 0x10: # creates the empty directory
@@ -480,7 +483,7 @@ def extract(opts, args):
 						dwAttributes = fres.dwAttributes
 						dwReparseReserved = fres.dwReparseReserved
 					# Pre-processes symbolic links and junctions
-					if dwAttributes & 0x400 and sys.platform in ('win32', 'cygwin'):
+					if dwAttributes & 0x400:
 						bRelative, sn, pn = ParseReparseBuf(open(file_res.name,'rb').read(32768), dwReparseReserved)
 						file_res.close()
 						if dwReparseReserved == 0xA000000C:
@@ -490,23 +493,33 @@ def extract(opts, args):
 							if not bRelative:
 								sn = os.path.join(os.path.abspath(args[2]), sn[7:])
 								logging.debug("Fixed absolute path string into %s", sn)
-							if windll.kernel32.CreateSymbolicLinkW(fname, sn, dwFlags):
-								logging.debug("Successfully created symbolic link %s => %s", fname, sn)
+							if sys.platform in ('win32', 'cygwin'):
+								if windll.kernel32.CreateSymbolicLinkW(fname, sn, dwFlags):
+									logging.debug("Successfully created symbolic link %s => %s", fname, sn)
+								else:
+									logging.debug("Can't create symbolic link %s => %s", fname, sn)
 							else:
-								logging.debug("Can't create symbolic link %s => %s", fname, sn)
+								logging.debug("Creating symbolic link %s => %s", fname, sn)
+								sn = sn.replace('\\', '/')
+								os.symlink(sn, fname)
 						elif dwReparseReserved == 0xA0000003:
 							sn = os.path.join(os.path.abspath(args[2]), sn[7:])
 							if os.path.exists(fname) and os.path.isfile(fname): os.remove(fname)
-							if not os.path.exists(fname): os.makedirs(fname)
 							#~ os.remove(fname)
-							# Admin rights not required!
-							if MakeReparsePoint(dwReparseReserved, os.path.abspath(fname), sn):
-								logging.debug("Successfully created junction %s => %s", fname, sn)
+							if sys.platform in ('win32', 'cygwin'):
+								# In Windows, the junction *IS* a real directory
+								if not os.path.exists(fname): os.makedirs(fname)
+								# Admin rights not required!
+								if MakeReparsePoint(dwReparseReserved, os.path.abspath(fname), sn):
+									logging.debug("Successfully created junction %s => %s", fname, sn)
+								else:
+									logging.debug("Can't create junction %s => %s", fname, sn)
 							else:
-								logging.debug("Can't create junction %s => %s", fname, sn)
-					elif dwAttributes & 0x400:
-						os.symlink(fname, first_fname)
-
+								if dwAttributes & 0x10:
+									logging.debug("Can't hard link directories in Linux: %s => %s", fname, sn)
+								else:
+									logging.debug("Creating hard link %s => %s", fname, sn)
+									os.link(sn, fname)
 				totalBytes += offset_table[ote].rhOffsetEntry.liOriginalSize
 				print_progress(application_start_time, totalBytes, totalOutputBytes)			
 
