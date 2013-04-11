@@ -57,11 +57,10 @@ def get_ads(pathname):
     "Returns the Alternate Data Streams for a file"
     ads = []
 
-    if sys.platform not in ('win32', 'cygwin'):
+    if not pathname or sys.platform not in ('win32', 'cygwin'):
         return ads
 
     fsd = WIN32_FIND_STREAM_DATA()
-    if not pathname: return ads
     # ImageX makes an unnamed data stream for the main contents, but
     # this seems unnecessary to properly recover all the streams
     h = windll.kernel32.FindFirstStreamW(pathname, 0, byref(fsd), 0)
@@ -75,7 +74,7 @@ def get_ads(pathname):
             se.wStreamNameLength = len(se.StreamName)
             se.SrcPathname = pathname+fsd.cStreamName[:-6]
             ads += [se]
-    windll.kernel32.CloseHandle(h)
+        windll.kernel32.CloseHandle(h)
     return ads
 
 def make_wimheader(compress=1):
@@ -107,9 +106,10 @@ def make_wimheader(compress=1):
 def make_direntry(pathname, security, isroot=0, srcdir=None):
 	e = DirEntry(255*'\0')
 	if len(pathname) < 255:
-		st = os.stat(pathname)
+		# In Linux we don't want to follow broken links!
+		st = os.lstat(pathname)
 	else:
-		st = os.stat('\\\\?\\'+os.path.abspath(pathname))
+		st = os.lstat('\\\\?\\'+os.path.abspath(pathname))
 	e.FileSize = st.st_size
 	if sys.platform in ('win32', 'cygwin'):
 		e.dwAttributes = windll.kernel32.GetFileAttributesW(pathname)
@@ -152,11 +152,13 @@ def make_direntry(pathname, security, isroot=0, srcdir=None):
 		if isRelative and e.dwReparseReserved == 0xA000000C: # Symlink
 			e.dwHardLink = 0x10000
 		e.FileSize = len(e.sReparseData)
+		logging.debug("Parsed %s as Reparse point type %X", pathname, e.dwReparseReserved) 
 	# Stores hard link (nFileIndex)
 	tu = IsHardlinkedFile(pathname)
 	if type(tu) == type(()):
 		e.dwReparseReserved = tu[0] # nFileIndexLow
 		e.dwHardLink = tu[1] # nFileIndexHigh
+		logging.debug("Parsed hard linked file %s", pathname) 
 	# Handles alternate data streams on Windows
 	e.alt_data_streams = {}
 	if not (e.dwAttributes & 0x10):
@@ -331,6 +333,7 @@ def make_offsetimage(codec, offset):
 def make_xmldata(wimTotBytes, dirCount, fileCount, totalBytes, hardlinkBytes, StartTime, StopTime, index=1, imgname='', xml=None, imgdsc=''):
 	if xml:
 		root = ET.XML(xml)
+		# Bytes comprised between the WIM header start and the XML Data Unicode lead byte
 		root.find('TOTALBYTES').text = str(wimTotBytes)
 	else:
 		root = ET.Element('WIM')
@@ -341,9 +344,14 @@ def make_xmldata(wimTotBytes, dirCount, fileCount, totalBytes, hardlinkBytes, St
 	img = ET.Element('IMAGE', INDEX=str(index))
 	root.insert(index, img) # maintain <totalbytes> on top with index=1
 	#~ img = ET.SubElement(root, 'IMAGE', INDEX=str(index))
+	# Number of "real" directories captured, not counting the root
 	ET.SubElement(img, 'DIRCOUNT').text = str(dirCount)
+	# Number of captured file objects, including  junction points, hard links
+	# and symbolic links (pointing to both files and directories)
 	ET.SubElement(img, 'FILECOUNT').text = str(fileCount)
+	# The amount of uncompressed file contents captured, including duplicates and hard linked files
 	ET.SubElement(img, 'TOTALBYTES').text = str(totalBytes)
+	# Total bytes for captured files represented by hard links
 	ET.SubElement(img, 'HARDLINKBYTES').text = str(hardlinkBytes)
 	c_time = ux2nttime(StartTime) # When image was started
 	tm = ET.SubElement(img, 'CREATIONTIME')

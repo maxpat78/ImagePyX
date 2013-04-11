@@ -1,4 +1,3 @@
-# -*- coding: mbcs -*-
 import fnmatch
 import re
 

@@ -38,8 +38,7 @@ def class2str(c, s):
 
 def common_getattr(c, name):
 	"Decodes and stores an attribute according to the class layout"
-	#~ i = c._vk[name]
-	i = c._vk.get(name)
+	i = c._vk[name]
 	fmt = c._kv[i][1]
 	cnt = struct.unpack_from(fmt, c._buf, i+c._i) [0]
 	setattr(c, name,  cnt)
@@ -98,11 +97,16 @@ def touch(pathname, WTime, CTime, ATime):
 	windll.kernel32.CloseHandle(hFile)
 
 def IsReparsePoint(pathname):
-    "Test if the object is a symbolic link or a junction point"
-    if sys.platform not in ('win32', 'cygwin') or not pathname:
-        return False
-    ret = windll.kernel32.GetFileAttributesW(pathname)
-    if ret > -1: return ret & 0x400 # FILE_ATTRIBUTE_REPARSE_POINT
+	"Test if the object is a symbolic link or a junction point"
+	if not pathname: return False
+	if sys.platform in ('win32', 'cygwin'):
+		ret = windll.kernel32.GetFileAttributesW(pathname)
+	else:
+		ret = (0, 0x400)[os.path.islink(pathname)]
+	if ret > -1:
+		return ret & 0x400 # FILE_ATTRIBUTE_REPARSE_POINT
+	else:
+		return False
 
 class WIN32_FIND_STREAM_DATA(Structure):
 	_fields_ = [("StreamSize", c_longlong), ("cStreamName", c_wchar*296)]
@@ -121,9 +125,16 @@ class BY_HANDLE_FILE_INFORMATION(Structure):
 
 def IsHardlinkedFile(pathname):
     "Test if a file has hard links"
+    if not pathname: return False
     if sys.platform not in ('win32', 'cygwin'):
-        return False
+        if not os.path.islink(pathname) and os.stat(pathname).st_nlink > 1:
+           return (0, os.stat(pathname).st_ino) # is inode a 32-bit number?
+        else:
+           return None
     hFile = windll.kernel32.CreateFileW(pathname, 0x80000100, 0, 0, 3, 0x02200000, 0)
+    if hFile == -1:
+        logging.debug("Can't open file %s with CreateFileW", pathname)
+        return None
     hfi = BY_HANDLE_FILE_INFORMATION()
     if windll.kernel32.GetFileInformationByHandle(hFile, byref(hfi)):
         windll.kernel32.CloseHandle(hFile)
@@ -135,12 +146,18 @@ def IsHardlinkedFile(pathname):
 def GetReparsePointTag(pathname):
 	"Retrieves the IO_REPARSE_TAG associated with a reparse point"
 	#~ print pathname.encode('mbcs')
-	wfd = WIN32_FIND_DATA()
-	h = windll.kernel32.FindFirstFileW(pathname, byref(wfd))
-	windll.kernel32.CloseHandle(h)
-	#~ print hex(wfd.dwReserved0)
-	logging.debug("Found %s on %s", {0xA000000C:'IO_REPARSE_TAG_SYMLINK',0xA0000003:'IO_REPARSE_TAG_MOUNT_POINT'}[wfd.dwReserved0], wfd.cFileName)
-	return wfd.dwReserved0
+	if sys.platform in ('win32', 'cygwin'):
+		wfd = WIN32_FIND_DATA()
+		h = windll.kernel32.FindFirstFileW(pathname, byref(wfd))
+		if h == -1:
+			return None
+		windll.kernel32.CloseHandle(h)
+		#~ print hex(wfd.dwReserved0)
+		logging.debug("Found %s on %s", {0xA000000C:'IO_REPARSE_TAG_SYMLINK',0xA0000003:'IO_REPARSE_TAG_MOUNT_POINT'}[wfd.dwReserved0], wfd.cFileName)
+		return wfd.dwReserved0
+	else:
+		if os.path.islink(pathname): # Does it make sense distinguish in Linux?
+			return 0xA000000C
 
 def ParseReparseBuf(s, tag):
 	"Parses a WIM reparse point buffer and returns the decoded paths"
@@ -175,6 +192,30 @@ def MakeReparsePoint(tag, dst, target):
 	
 def GetReparsePointData(pathname, srcdir):
 	"Retrieves and fixes the REPARSE_DATA_BUFFER associated with a reparse point"
+	if sys.platform not in ('win32', 'cygwin'):
+		lk = os.readlink(pathname)
+		Flags = not os.path.isabs(lk) # determines if it is relative
+		if lk.find(os.path.abspath(srcdir)) == 0:
+			SubstName = '\\??\\C:' + lk[len(os.path.abspath(srcdir)):]
+			PrintName = 'C:' + lk[len(os.path.abspath(srcdir)):]
+		else:
+			SubstName = PrintName = lk
+		logging.debug('Reparse point: subst="%s", print="%s"', SubstName, PrintName)
+		SubstName = SubstName.replace('/', '\\')
+		PrintName = PrintName.replace('/', '\\')
+		SubstName = SubstName.encode('utf-16le')
+		PrintName = PrintName.encode('utf-16le')
+		if not Flags:
+			inc = 2
+		else:
+			inc = 0
+		s = struct.pack('<HHHH', 0, len(SubstName), len(SubstName)+inc, len(PrintName))
+		s += struct.pack('<I', Flags) # always symlink
+		if not Flags: # an absolute path gets NULL terminated
+			SubstName += '\0\0'
+			PrintName += '\0\0'
+		s += SubstName + PrintName
+		return Flags, s
 	hFile = windll.kernel32.CreateFileW(pathname, 0x80000100, 0, 0, 3, 0x02200000, 0)
 	if hFile != -1:
 		s = create_string_buffer(1024)
@@ -239,9 +280,10 @@ def AcquirePrivilege(privilege):
     tkp.luid = LUID
     tkp.dwAttributes = 2 # SE_PRIVILEGE_ENABLED
     ret = windll.advapi32.AdjustTokenPrivileges(hToken, 0, byref(tkp), sizeof(tkp), 0, 0)
-    if not ret or windll.kernel32.GetLastError():
+    if ret == 0 or windll.kernel32.GetLastError() != 0:
         logging.debug("Privilege %s not acquired!", privilege)
-    return ret
+        return False
+    return True
 
 def print_progress(start_time, totalBytes, totalBytesToDo):
 	"Prints a progress string"
@@ -255,9 +297,17 @@ def print_progress(start_time, totalBytes, totalBytesToDo):
 		s = '%d secs' % avg_secs_remaining
 	else:
 		s = '%d:%02d mins' % (avg_secs_remaining/60, avg_secs_remaining%60)
-	sys.stdout.write('%d%% done, %s left          \r' % (pct_done, s))
+	print_progress.fu('%d%% done, %s left          \r' % (pct_done, s))
 
 print_progress.last_print = 0
+if 'linux' in sys.platform:
+	def fu(s):
+		sys.stdout.write(s)
+		sys.stdout.flush()
+	print_progress.fu = fu
+else:
+	print_progress.fu = sys.stdout.write
+
 
 def print_timings(start, stop):
 	print "Done. %s time elapsed." % datetime.timedelta(seconds=int(stop-start))
@@ -366,7 +416,11 @@ class SecurityData:
 			self._vk[v[0]] = k
 		self.dwTotalLength = 8 # initial size (empty object)
 		self.size = self.dwTotalLength
-		self.SeSecurityPrivilege = AcquirePrivilege("SeSecurityPrivilege")
+		if AcquirePrivilege("SeSecurityPrivilege"):
+			self.SeSecurityPrivilege = True
+		else:
+			self.SeSecurityPrivilege = False
+			logging.debug("SeSecurityPrivilege not held, can't handle SACL_SECURITY_INFORMATION nor restore SDs!")
 		
 	__getattr__ = common_getattr
 	

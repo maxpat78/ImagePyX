@@ -25,6 +25,10 @@ from SSWIMMD import *
 
 
 def append(opts, args):
+	if not os.path.exists(args[1]):
+		logging.debug("%s does not exist, creating a new WIM", args[1])
+		return create(opts, args)
+
 	srcdir = args[0]
 	RefCounts = OrderedDict()
 	

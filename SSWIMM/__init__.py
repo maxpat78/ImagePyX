@@ -1,4 +1,3 @@
-# -*- coding: mbcs -*-
 # SSWIMM - Super Simple WIM Manager
 # Main package
 

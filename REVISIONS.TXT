@@ -97,13 +97,20 @@ FEB 2012	Planning the WIM archive classes
 08.04.13 	splitted test and extract function to clearly improve test performances
 		restored MultiChunk(tm) in Codecs.decompression to speed up
 		minor fixes to run under Linux (tested with Ubuntu 12.10)
-09.04.13 r.0.28 more fixes to let it run fine in Linux (codepages; links)  
+09.04.13 r.0.28 more fixes to let it run fine in Linux (codepages; links)
+		IsReparsePoint always returns again, preventing random access violation exceptions
+11.04.13	other bugs and incompatibilities fixed
+		Linux console flushed
+		can capture sym/hard links (Linux)
+
 
 
 TODO
 ====
+- isolate Win32/Linux code if os.platform == 'nt' ...
 - possible inf loop in while self.chunk < chunk when decompressing?
 - discover how to improve applying times
+- replace file with os.fdopen & co.?
 - apply times and perms to root target, too!
 - acquire all required privileges in Windows
 - export with resource recompression
@@ -116,9 +123,8 @@ TODO
 - set FLAG_HEADER_RESOURCE_ONLY, FLAG_HEADER_METADATA_ONLY in WIM header
 - investigate around RESHDR_FLAG_FREE
 - compare valid WIM size with xmldata?
+- check too small WIM (< 208+nn bytes?)
+- binary repairer module
 - better test it under Linux:
-  + capture sym/hard links
   + capture user/group in ALT streams?
-  + fix broken console progressive update
-  + check exhotic codepages ('mbcs')
   + using star * with export conflicts with bash?

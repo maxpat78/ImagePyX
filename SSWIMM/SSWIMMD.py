@@ -86,12 +86,10 @@ def get_images(fp, wim):
 
 def get_resource(fpi, ote, null=False, target=None):
 	"Test a resource and returns a stream to it, eventually expanded"
-	#~ if not ote.rhOffsetEntry.liOriginalSize:
-		#~ return (True, open(target, 'wb'))
 	pos = fpi.tell()
 	fpi.seek(ote.rhOffsetEntry.liOffset)
 	if null:
-		tmpres = open(('/dev/null','NUL')[sys.platform in ('win32', 'cygwin')], 'wb')
+		tmpres = open(os.devnull, 'wb')
 	else:
 		if target:
 			tmpres = open(target, 'wb')
@@ -239,19 +237,6 @@ def get_metadata(fpi, image):
 	return metadata
 
 
-# INF folder
-# test: 5" [2-open] vs 2" (7z)
-# apply: 20"-14" vs 9"-14" (7z) (1st to empty dir, 2nd to full dir)
-# XP.wim test: 45" [open] vs 31" (7-zip)
-# XP.wim test: 60" [open] vs 31" (7-zip)
-# Applying the INF folder: 1'17" vs 12/14" (wimlib-imagex/7-zip)
-# Applying the INF folder: 18" vs 12/14" (wimlib-imagex/7-zip)
-# BUGBUG! Eliminare una JUNCTION prima di ricrearla!
-# XP.wim apply: 3:07 vs 2:12 (7-zip) vs 2:36 (wimlib)
-# CON updating impacts for 20" on 62?
-# Applying times, perms and SDs impacts for about 10"
-# XP.wim apply: 3:11 even with console off!
-# 2:40 to a preexistent tree
 def test(opts, args):
 	StartTime = time.time()
 
@@ -463,7 +448,7 @@ def extract(opts, args):
 							if windll.kernel32.CreateHardLinkW(fname, first_fname, 0): # no Admin required!
 								logging.debug("Duplicate File resource: '%s' hard linked to '%s'", fname, first_name)
 						else:
-							os.link(fname, first_fname)
+							os.link(first_fname, fname)
 					else:
 						shutil.copy(first_fname, fname)
 						logging.debug("Duplicate File resource: copied '%s' to '%s'", first_fname, fname)
@@ -476,6 +461,7 @@ def extract(opts, args):
 						print "File '%s' corrupted!" % fname
 						logging.debug("CRC error for %s", fname)
 					# ImageX puts symlink data in the STREAMENTRY, but accepts them in the DIRENTRY, too!
+					# On Linux, an ADS is restored like a plain file, since colon isn't a special char
 					if isinstance(fres, StreamEntry):
 						dwReparseReserved = fres.parent.dwReparseReserved
 						dwAttributes = fres.parent.dwAttributes
@@ -516,7 +502,8 @@ def extract(opts, args):
 									logging.debug("Can't create junction %s => %s", fname, sn)
 							else:
 								if dwAttributes & 0x10:
-									logging.debug("Can't hard link directories in Linux: %s => %s", fname, sn)
+									logging.debug("Can't hard link directories in Linux: created symlink %s => %s", fname, sn)
+									os.symlink(sn, fname)
 								else:
 									logging.debug("Creating hard link %s => %s", fname, sn)
 									os.link(sn, fname)
@@ -534,10 +521,13 @@ def extract(opts, args):
 				fname = os.path.join(args[2], directories.get(fres._parent, '')[1:], fres.FileName)
 				if opts.exclude_list and is_excluded(fname, opts.exclude_list):
 					continue
-				if sys.platform in ('win32', 'cygwin'):
-					windll.kernel32.SetFileAttributesW(fname, fres.dwAttributes)
-					security.apply(fres.dwSecurityId, fname)
-				if hasattr(fres, 'liLastWriteTime'): # ADS haven't all attributes
+				if not os.path.exists(fname):
+					continue
+				if isinstance(fres, DirEntry): # ADS have less attributes
+				#~ if hasattr(fres, 'liLastWriteTime'): # ADS haven't all attributes
+					if sys.platform in ('win32', 'cygwin'):
+						windll.kernel32.SetFileAttributesW(fname, fres.dwAttributes)
+						security.apply(fres.dwSecurityId, fname)
 					touch(fname, fres.liLastWriteTime, fres.liCreationTime, fres.liLastAccessTime)
 
 		if badfiles:
