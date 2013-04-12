@@ -78,35 +78,6 @@ def take_sha(pathname, _blklen=32*1024, first_chunk=False):
 		fp.seek(0)
 	return fp, sha.digest()
 
-def touch(pathname, WTime, CTime, ATime):
-	if sys.platform not in ('win32', 'cygwin'):
-		try:
-			os.utime(pathname, (nt2uxtime(ATime), nt2uxtime(WTime)))
-		except:
-			logging.debug("Can't touch %s", pathname)
-		return
-	hFile = windll.kernel32.CreateFileW(pathname, 0x0100, 0, 0, 3, 0x02000000, 0)
-	if hFile == -1:
-		logging.debug("Can't open '%s' to touch it!", pathname)
-		return
-	CTime = c_ulonglong(CTime)
-	ATime = c_ulonglong(ATime)
-	WTime = c_ulonglong(WTime)
-	if not windll.kernel32.SetFileTime(hFile, byref(CTime), byref(ATime), byref(WTime)):
-		logging.debug("Can't apply datetimes to '%s'!", pathname)
-	windll.kernel32.CloseHandle(hFile)
-
-def IsReparsePoint(pathname):
-	"Test if the object is a symbolic link or a junction point"
-	if not pathname: return False
-	if sys.platform in ('win32', 'cygwin'):
-		ret = windll.kernel32.GetFileAttributesW(pathname)
-	else:
-		ret = (0, 0x400)[os.path.islink(pathname)]
-	if ret > -1:
-		return ret & 0x400 # FILE_ATTRIBUTE_REPARSE_POINT
-	else:
-		return False
 
 class WIN32_FIND_STREAM_DATA(Structure):
 	_fields_ = [("StreamSize", c_longlong), ("cStreamName", c_wchar*296)]
@@ -123,41 +94,144 @@ class BY_HANDLE_FILE_INFORMATION(Structure):
 	("ftLastWriteTime", c_ulonglong), ("dwVolumeSerialNumber", c_uint), ("nFileSizeHigh", c_uint), ("nFileSizeLow", c_uint),
 	("nNumberOfLinks", c_uint), ("nFileIndexHigh", c_uint), ("nFileIndexLow", c_uint)]
 
-def IsHardlinkedFile(pathname):
-    "Test if a file has hard links"
-    if not pathname: return False
-    if sys.platform not in ('win32', 'cygwin'):
-        if not os.path.islink(pathname) and os.stat(pathname).st_nlink > 1:
-           return (0, os.stat(pathname).st_ino) # is inode a 32-bit number?
-        else:
-           return None
-    hFile = windll.kernel32.CreateFileW(pathname, 0x80000100, 0, 0, 3, 0x02200000, 0)
-    if hFile == -1:
-        logging.debug("Can't open file %s with CreateFileW", pathname)
-        return None
-    hfi = BY_HANDLE_FILE_INFORMATION()
-    if windll.kernel32.GetFileInformationByHandle(hFile, byref(hfi)):
-        windll.kernel32.CloseHandle(hFile)
-        if hfi.nNumberOfLinks > 1:
-            return hfi.nFileIndexLow, hfi.nFileIndexHigh # FileIndex
-    windll.kernel32.CloseHandle(hFile)
-    return None
 
-def GetReparsePointTag(pathname):
-	"Retrieves the IO_REPARSE_TAG associated with a reparse point"
-	#~ print pathname.encode('mbcs')
-	if sys.platform in ('win32', 'cygwin'):
+if os.name == 'nt':
+	def touch(pathname, WTime, CTime, ATime):
+		hFile = windll.kernel32.CreateFileW(pathname, 0x0100, 0, 0, 3, 0x02000000, 0)
+		if hFile == -1:
+			logging.debug("Can't open '%s' to touch it!", pathname)
+			return
+		CTime = c_ulonglong(CTime)
+		ATime = c_ulonglong(ATime)
+		WTime = c_ulonglong(WTime)
+		if not windll.kernel32.SetFileTime(hFile, byref(CTime), byref(ATime), byref(WTime)):
+			logging.debug("Can't apply datetimes to '%s'!", pathname)
+		windll.kernel32.CloseHandle(hFile)
+
+	def IsReparsePoint(pathname):
+		"Test if the object is a symbolic link or a junction point"
+		if not pathname: return False
+		ret = windll.kernel32.GetFileAttributesW(pathname)
+		if ret > -1:
+			return ret & 0x400 # FILE_ATTRIBUTE_REPARSE_POINT
+		else:
+			return False
+
+	def IsHardlinkedFile(pathname):
+		"Test if a file has hard links"
+		if not pathname: return False
+		hFile = windll.kernel32.CreateFileW(pathname, 0x80000100, 0, 0, 3, 0x02200000, 0)
+		if hFile == -1:
+			logging.debug("Can't open file %s with CreateFileW", pathname)
+			return None
+		ret, hfi = None, BY_HANDLE_FILE_INFORMATION()
+		if windll.kernel32.GetFileInformationByHandle(hFile, byref(hfi)):
+			if hfi.nNumberOfLinks > 1:
+				ret = (hfi.nFileIndexLow, hfi.nFileIndexHigh) # FileIndex
+		windll.kernel32.CloseHandle(hFile)
+		return ret
+
+	def GetReparsePointTag(pathname):
+		"Retrieves the IO_REPARSE_TAG associated with a reparse point"
 		wfd = WIN32_FIND_DATA()
 		h = windll.kernel32.FindFirstFileW(pathname, byref(wfd))
-		if h == -1:
-			return None
+		if h == -1: return None
 		windll.kernel32.CloseHandle(h)
-		#~ print hex(wfd.dwReserved0)
 		logging.debug("Found %s on %s", {0xA000000C:'IO_REPARSE_TAG_SYMLINK',0xA0000003:'IO_REPARSE_TAG_MOUNT_POINT'}[wfd.dwReserved0], wfd.cFileName)
 		return wfd.dwReserved0
-	else:
-		if os.path.islink(pathname): # Does it make sense distinguish in Linux?
-			return 0xA000000C
+
+	def GetReparsePointData(pathname, srcdir):
+		"Retrieves and fixes the REPARSE_DATA_BUFFER associated with a reparse point"
+		hFile = windll.kernel32.CreateFileW(pathname, 0x80000100, 0, 0, 3, 0x02200000, 0)
+		if hFile == -1: return None
+		s, n = create_string_buffer(1024), c_int()
+		# FSCTL_GET_REPARSE_POINT to get the REPARSE_DATA_BUFFER
+		if not windll.kernel32.DeviceIoControl(hFile, 0x900A8, 0, 0, s, 1024, byref(n), 0): return None
+		windll.kernel32.CloseHandle(hFile)
+		#~ print s[:n.value]
+		start = 16
+		Tag, wLen, wResv, SubstNameOffs, SubstNameLen, PrintNameOffs, PrintNameLen = struct.unpack('<IHHHHHH', s[0:16])
+		#~ print hex(Tag), wResv, SubstNameOffs, SubstNameLen, PrintNameOffs, PrintNameLen
+		Flags = 0
+		if Tag == 0xA000000C:
+			Flags = struct.unpack('<I', s[16:20])[0]
+			start += 4
+		i = start+SubstNameOffs
+		SubstName = s[i : i+SubstNameLen].decode('utf-16le')
+		i = start+PrintNameOffs
+		PrintName = s[i : i+PrintNameLen].decode('utf-16le')
+		# Fix the abspath if it points inside the image root
+		#~ print SubstName, '\n', os.path.abspath(srcdir)
+		if SubstName.lower().find(os.path.abspath(srcdir).lower()) == 4:
+			SubstName = SubstName[:6] + SubstName[4+len(os.path.abspath(srcdir)):]
+			PrintName = PrintName[:2] + PrintName[len(os.path.abspath(srcdir)):]
+		#~ print SubstName, PrintName
+		logging.debug('Reparse point: tag=%08X, subst="%s", print="%s"', Tag, SubstName, PrintName)
+		SubstName = SubstName.encode('utf-16le')
+		PrintName = PrintName.encode('utf-16le')
+		if not Flags:
+			inc = 2
+		else:
+			inc = 0
+		s = struct.pack('<HHHH', 0, len(SubstName), len(SubstName)+inc, len(PrintName))
+		if Tag == 0xA000000C:
+			s += struct.pack('<I', Flags)
+		if not Flags: # an absolute path gets NULL terminated
+			SubstName += '\0\0'
+			PrintName += '\0\0'
+		s += SubstName + PrintName
+		return Flags, s
+
+else: # posix
+	def touch(pathname, WTime, CTime, ATime):
+		try:
+			os.utime(pathname, (nt2uxtime(ATime), nt2uxtime(WTime)))
+		except:
+			logging.debug("Can't touch %s", pathname)
+		return
+
+	def IsReparsePoint(pathname):
+		"Test if the object is a symbolic link or a junction point"
+		if not pathname: return False
+		if os.path.islink(pathname): return True
+		return False
+
+	def IsHardlinkedFile(pathname):
+		"Test if a file has hard links"
+		if not pathname: return False
+		if not os.path.islink(pathname) and os.stat(pathname).st_nlink > 1:
+			return (0, os.stat(pathname).st_ino) # is inode a 32-bit number?
+		else:
+			return None
+
+	def GetReparsePointTag(pathname):
+		"Retrieves the IO_REPARSE_TAG associated with a reparse point"
+		if os.path.islink(pathname): return 0xA000000C
+
+	def GetReparsePointData(pathname, srcdir):
+		"Retrieves and fixes the REPARSE_DATA_BUFFER associated with a reparse point"
+		lk = os.readlink(pathname)
+		Flags = not os.path.isabs(lk) # determines if it is relative
+		if lk.find(os.path.abspath(srcdir)) == 0:
+			SubstName = '\\??\\C:' + lk[len(os.path.abspath(srcdir)):]
+			PrintName = 'C:' + lk[len(os.path.abspath(srcdir)):]
+		else:
+			SubstName = PrintName = lk
+		logging.debug('Reparse point: subst="%s", print="%s"', SubstName, PrintName)
+		SubstName = SubstName.replace('/', '\\').encode('utf-16le')
+		PrintName = PrintName.replace('/', '\\').encode('utf-16le')
+		if not Flags:
+			inc = 2
+		else:
+			inc = 0
+		s = struct.pack('<HHHH', 0, len(SubstName), len(SubstName)+inc, len(PrintName))
+		s += struct.pack('<I', Flags) # always symlink
+		if not Flags: # an absolute path gets NULL terminated
+			SubstName += '\0\0'
+			PrintName += '\0\0'
+		s += SubstName + PrintName
+		return Flags, s
+
 
 def ParseReparseBuf(s, tag):
 	"Parses a WIM reparse point buffer and returns the decoded paths"
@@ -189,74 +263,6 @@ def MakeReparsePoint(tag, dst, target):
 			ret = 1
 		windll.kernel32.CloseHandle(hFile)
 		return ret
-	
-def GetReparsePointData(pathname, srcdir):
-	"Retrieves and fixes the REPARSE_DATA_BUFFER associated with a reparse point"
-	if sys.platform not in ('win32', 'cygwin'):
-		lk = os.readlink(pathname)
-		Flags = not os.path.isabs(lk) # determines if it is relative
-		if lk.find(os.path.abspath(srcdir)) == 0:
-			SubstName = '\\??\\C:' + lk[len(os.path.abspath(srcdir)):]
-			PrintName = 'C:' + lk[len(os.path.abspath(srcdir)):]
-		else:
-			SubstName = PrintName = lk
-		logging.debug('Reparse point: subst="%s", print="%s"', SubstName, PrintName)
-		SubstName = SubstName.replace('/', '\\')
-		PrintName = PrintName.replace('/', '\\')
-		SubstName = SubstName.encode('utf-16le')
-		PrintName = PrintName.encode('utf-16le')
-		if not Flags:
-			inc = 2
-		else:
-			inc = 0
-		s = struct.pack('<HHHH', 0, len(SubstName), len(SubstName)+inc, len(PrintName))
-		s += struct.pack('<I', Flags) # always symlink
-		if not Flags: # an absolute path gets NULL terminated
-			SubstName += '\0\0'
-			PrintName += '\0\0'
-		s += SubstName + PrintName
-		return Flags, s
-	hFile = windll.kernel32.CreateFileW(pathname, 0x80000100, 0, 0, 3, 0x02200000, 0)
-	if hFile != -1:
-		s = create_string_buffer(1024)
-		n = c_int()
-		# FSCTL_GET_REPARSE_POINT to get the REPARSE_DATA_BUFFER
-		if windll.kernel32.DeviceIoControl(hFile, 0x900A8, 0, 0, s, 1024, byref(n), 0):
-			windll.kernel32.CloseHandle(hFile)
-			#~ print s[:n.value]
-			start = 16
-			Tag, wLen, wResv, SubstNameOffs, SubstNameLen, PrintNameOffs, PrintNameLen = struct.unpack('<IHHHHHH', s[0:16])
-			#~ print hex(Tag), wResv, SubstNameOffs, SubstNameLen, PrintNameOffs, PrintNameLen
-			Flags = 0
-			if Tag == 0xA000000C:
-				Flags = struct.unpack('<I', s[16:20])[0]
-				start += 4
-			i = start+SubstNameOffs
-			SubstName = s[i : i+SubstNameLen].decode('utf-16le')
-			i = start+PrintNameOffs
-			PrintName = s[i : i+PrintNameLen].decode('utf-16le')
-			# Fix the abspath if it points inside the image root
-			#~ print SubstName, '\n', os.path.abspath(srcdir)
-			if SubstName.lower().find(os.path.abspath(srcdir).lower()) == 4:
-				SubstName = SubstName[:6] + SubstName[4+len(os.path.abspath(srcdir)):]
-				PrintName = PrintName[:2] + PrintName[len(os.path.abspath(srcdir)):]
-			#~ print SubstName, PrintName
-			logging.debug('Reparse point: tag=%08X, subst="%s", print="%s"', Tag, SubstName, PrintName)
-			SubstName = SubstName.encode('utf-16le')
-			PrintName = PrintName.encode('utf-16le')
-			if not Flags:
-				inc = 2
-			else:
-				inc = 0
-			s = struct.pack('<HHHH', 0, len(SubstName), len(SubstName)+inc, len(PrintName))
-			if Tag == 0xA000000C:
-				s += struct.pack('<I', Flags)
-			if not Flags: # an absolute path gets NULL terminated
-				SubstName += '\0\0'
-				PrintName += '\0\0'
-			s += SubstName + PrintName
-			return Flags, s
-	return None
 
 class myTokenPriv(Structure):
 	_pack_ = 1

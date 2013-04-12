@@ -131,7 +131,8 @@ def make_direntry(pathname, security, isroot=0, srcdir=None):
 	e.FileName = base.encode('utf-16le')
 	# Handles short file name on Windows
 	if sys.platform in ('win32', 'cygwin'):
-		short_pathname = create_string_buffer(len(pathname)*2+2)
+		# Win8: +8 instead of +2, or access violation occurs: why???
+		short_pathname = create_string_buffer(len(pathname)*2+8)
 		i = windll.kernel32.GetShortPathNameW(pathname, short_pathname, 2*len(pathname)+2)
 		u_short_pathname = short_pathname.raw.decode('utf-16le')[:i]
 		short_base = os.path.basename(u_short_pathname)

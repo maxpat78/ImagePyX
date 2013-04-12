@@ -31,7 +31,7 @@ Useful links about WIM Images:
 
 
 FOLDER CONTENTS:
-- ImagePyX.py		the main Python module (rev. 0.27), driver for the SSWIMM package
+- ImagePyX.py		the main Python module (rev. 0.28), driver for the SSWIMM package
 - SSWIMM		package directory containing the submodules
 - README.MD		this file
 - REVISIONS.TXT		developement history and todo

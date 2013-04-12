@@ -102,19 +102,19 @@ FEB 2012	Planning the WIM archive classes
 11.04.13	other bugs and incompatibilities fixed
 		Linux console flushed
 		can capture sym/hard links (Linux)
-
+		fixed a bug with GetShortPathname in Windows 8
+		reorganized code in WimArchive
 
 
 TODO
 ====
-- isolate Win32/Linux code if os.platform == 'nt' ...
+- handle not accessible files (i.e. when Admin rights are required)
 - possible inf loop in while self.chunk < chunk when decompressing?
 - discover how to improve applying times
 - replace file with os.fdopen & co.?
 - apply times and perms to root target, too!
 - acquire all required privileges in Windows
 - export with resource recompression
-- handle not accessible files (i.e. when Admin rights are required)
 - foreign SDs: have they to be restored?
 - merge/read from multiple SWM
 - change image name/description in XML data with --info
