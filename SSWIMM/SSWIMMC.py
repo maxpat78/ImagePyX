@@ -3,10 +3,10 @@ SSWIMMC.PY - Super Simple WIM Manager
 Creator module - Multithreaded version
 '''
 
-VERSION = '0.28'
+VERSION = '0.29'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
-This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
+This free software manages MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
 
 import Codecs
 import fnmatch
@@ -29,53 +29,6 @@ from xml.etree import ElementTree as ET
 from WIMArchive import *
 from StringIO import StringIO
 
-def copy(pathname, stream, _blklen=32*1024):
-	"Copies a file content to a previously opened output stream"
-	if type(pathname) in (type(''), type(u'')):
-		fp = open(pathname, 'rb')
-	else:
-		fp = pathname
-	while 1:
-		s = fp.read(_blklen)
-		stream.write(s)
-		if len(s) < _blklen: break
-
-def copyres(offset, size, fp_in, fp_out):
-	"Copies a file resource"
-	fp_in.seek(offset)
-	todo = size
-	while todo:
-		if todo > 32768:
-			cb = 32768
-		else:
-			cb = todo
-		fp_out.write(fp_in.read(cb))
-		todo -= cb
-	logging.debug("Copied resource @0x%08X for %d bytes", offset, size)
-
-def get_ads(pathname):
-    "Returns the Alternate Data Streams for a file"
-    ads = []
-
-    if not pathname or sys.platform not in ('win32', 'cygwin'):
-        return ads
-
-    fsd = WIN32_FIND_STREAM_DATA()
-    # ImageX makes an unnamed data stream for the main contents, but
-    # this seems unnecessary to properly recover all the streams
-    h = windll.kernel32.FindFirstStreamW(pathname, 0, byref(fsd), 0)
-
-    if h != -1:
-        while windll.kernel32.FindNextStreamW(h, byref(fsd)): # CAVE! Fails with junction points!
-            if not fsd.cStreamName.endswith('$DATA'): continue
-            se = StreamEntry(64*'\0')
-            se.FileSize = fsd.StreamSize
-            se.StreamName = fsd.cStreamName[1:-6].encode('utf-16le')
-            se.wStreamNameLength = len(se.StreamName)
-            se.SrcPathname = pathname+fsd.cStreamName[:-6]
-            ads += [se]
-        windll.kernel32.CloseHandle(h)
-    return ads
 
 def make_wimheader(compress=1):
 	wim = WIMHeader(208*'\0')
@@ -131,9 +84,9 @@ def make_direntry(pathname, security, isroot=0, srcdir=None):
 	e.FileName = base.encode('utf-16le')
 	# Handles short file name on Windows
 	if sys.platform in ('win32', 'cygwin'):
-		# Win8: +8 instead of +2, or access violation occurs: why???
-		short_pathname = create_string_buffer(len(pathname)*2+8)
-		i = windll.kernel32.GetShortPathNameW(pathname, short_pathname, 2*len(pathname)+2)
+		i = windll.kernel32.GetShortPathNameW(pathname, 0, 0)
+		short_pathname = create_string_buffer(2*i) # wchar_t
+		i = windll.kernel32.GetShortPathNameW(pathname, short_pathname, i)
 		u_short_pathname = short_pathname.raw.decode('utf-16le')[:i]
 		short_base = os.path.basename(u_short_pathname)
 		if base != short_base:
@@ -255,7 +208,14 @@ def make_fileresources(out, comp, entries, refcounts, total_input_bytes, start_t
 			e.SrcPathname = StringIO(e.sReparseData)
 			e.bCompressed = 0
 			e.liSubdirOffset = 0
-		fp, chunk_crc = take_sha(e.SrcPathname, first_chunk=1)
+		try:
+			fp, chunk_crc = take_sha(e.SrcPathname, first_chunk=1)
+		except:
+			logging.debug("Could not capture '%s', skipped.", e.SrcPathname)
+			print "WARNING: could not capture '%s', skipped." % e.SrcPathname
+			totalBytes += e.FileSize
+			print_progress(comp_start_time, totalBytes, total_input_bytes)
+			continue
 		if chunk_crc in chunk_hash_table:
 			fp, crc = take_sha(e.SrcPathname)
 			if crc in refcounts:
@@ -273,10 +233,6 @@ def make_fileresources(out, comp, entries, refcounts, total_input_bytes, start_t
 			calc_crc = True
 		if e.dwAttributes & 0x400:
 			e.SrcPathname = StringIO(e.sReparseData)
-		#~ if type(e.SrcPathname) in (type(''), type(u'')):
-			#~ fp = open(e.SrcPathname, 'rb')
-		#~ else:
-			#~ fp = e.SrcPathname
 		e.Offset = out.tell() # Fileresource start offset inside WIM
 		logging.debug("Starting new File resource @%08X", e.Offset)
 		#~ logging.debug("fp=%s, out=%s, e.FileSize=%d, calc_crc=%s", fp, out, e.FileSize, calc_crc)
@@ -531,4 +487,3 @@ def create(opts, args):
 	finalize_wimheader(wim, out)
 
 	print_timings(StartTime, StopTime)
-	#~ print "Files stored due to Threshold filter:", Codecs.Codec.compressions_skipped

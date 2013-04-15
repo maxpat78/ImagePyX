@@ -3,10 +3,10 @@ SWIMMX.PY - Part of Super Simple WIM Manager
 Exporter module
 '''
 
-VERSION = '0.28'
+VERSION = '0.29'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
-This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
+This free software manages MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
 
 import hashlib
 import logging
@@ -23,6 +23,25 @@ from SSWIMMC import *
 from SSWIMMD import *
 
 
+def copyres2(ote, fp_in, fp_out):
+	"Copies a file resource, changing its compression"
+	isGood, fp = get_resource(fp_in, ote, False)
+	if not isGood:
+		logging.debug("Corrupted resource @0x%08X, simply copied!", ote.rhOffsetEntry.liOffset)
+		print "Corrupted resource @0x%08X, simply copied!" % ote.rhOffsetEntry.liOffset
+		copyres(ote.rhOffsetEntry.liOffset, ote.rhOffsetEntry.ullSize, fp_in, fp_out)
+		fp.close()
+		return
+	Codecs.Codec2.compress(fp, fp_out, ote.rhOffsetEntry.liOriginalSize)
+	if Codecs.Codec2.osize < ote.rhOffsetEntry.liOriginalSize:
+		ote.rhOffsetEntry.bFlags |= 4 # compressed
+	elif ote.rhOffsetEntry.bFlags & 4:
+		ote.rhOffsetEntry.bFlags ^= 4 # uncompressed
+	logging.debug("Recompressed resource @0x%08X from %d to %d bytes", ote.rhOffsetEntry.liOffset, ote.rhOffsetEntry.ullSize, Codecs.Codec2.osize)
+	ote.rhOffsetEntry.ullSize = Codecs.Codec2.osize
+	fp.close()
+
+
 def export(opts, args):
 	StartTime = time.time()
 
@@ -32,7 +51,7 @@ def export(opts, args):
 	print "Opening WIM unit..."
 	wim = get_wimheader(fpi)
 
-	COMPRESSION_TYPE = get_wim_comp(wim)
+	NEW_COMPRESSION_TYPE = COMPRESSION_TYPE = get_wim_comp(wim)
 
 	Codecs.Codec = CodecMT(opts.num_threads, COMPRESSION_TYPE)
 
@@ -58,9 +77,9 @@ def export(opts, args):
 	if os.path.exists(args[2]):
 		fpo = open(args[2], 'r+b')
 		new_wim = get_wimheader(fpo)
-		if COMPRESSION_TYPE != get_wim_comp(new_wim):
-			print "Fatal: can't export to an old WIM with different compression!"
-			sys.exit(1)
+		NEW_COMPRESSION_TYPE = get_wim_comp(new_wim)
+		if COMPRESSION_TYPE != NEW_COMPRESSION_TYPE:
+			Codecs.Codec2 = CodecMT(opts.num_threads, NEW_COMPRESSION_TYPE)
 		new_images = get_images(fpo, new_wim)
 		new_offset_table = get_offsettable(fpo, new_wim)
 		xml_data = get_xmldata(fpo, new_wim)
@@ -81,8 +100,8 @@ def export(opts, args):
 		if not img_index:
 			img_index += 1
 		
-		print "Exporting Image #%d" % new_wim.dwImageCount
-		logging.debug("Exporting of Image #%d started...", new_wim.dwImageCount)
+		print "Exporting Image #%d to Image #%d" % (wim.dwImageCount, new_wim.dwImageCount)
+		logging.debug("Exporting Image #%d to Image #%d", wim.dwImageCount, new_wim.dwImageCount)
 		
 		print "Opening Metadata resource..."
 		metadata = get_metadata(fpi, image)
@@ -103,6 +122,14 @@ def export(opts, args):
 		
 		# Export the File resources
 		print "Exporting the resources..."
+
+		# Sorts by on-disk resource offset
+		NULLK = 20*'\0'
+		def direntries_sort(a, b):
+			if a[0] == NULLK or b[0] == NULLK: return 0
+			return cmp(offset_table[a[0]].rhOffsetEntry.liOffset, offset_table[b[0]].rhOffsetEntry.liOffset)
+		direntries = OrderedDict(sorted(direntries.items(), direntries_sort))
+
 		total_done_bytes = 0
 		for bHash in direntries:
 			if bHash not in offset_table: continue
@@ -113,7 +140,10 @@ def export(opts, args):
 			if not ote.dwRefCount: # skips unused resources
 				continue
 			liOffset = fpo.tell()
-			copyres(ote.rhOffsetEntry.liOffset, ote.rhOffsetEntry.ullSize, fpi, fpo)
+			if COMPRESSION_TYPE == NEW_COMPRESSION_TYPE:
+				copyres(ote.rhOffsetEntry.liOffset, ote.rhOffsetEntry.ullSize, fpi, fpo)
+			else:
+				copyres2(ote, fpi, fpo)
 			ote.rhOffsetEntry.liOffset = liOffset # update resource offset
 			ote.dwRefCount = len(direntries[bHash])
 			new_offset_table[bHash] = ote
@@ -124,7 +154,10 @@ def export(opts, args):
 		print "Exporting the Metadata..."
 		image_start = fpo.tell()
 		logging.debug("Image start @%08X", image_start)
-		copyres(image.rhOffsetEntry.liOffset, image.rhOffsetEntry.ullSize, fpi, fpo)
+		if COMPRESSION_TYPE == NEW_COMPRESSION_TYPE:
+			copyres(image.rhOffsetEntry.liOffset, image.rhOffsetEntry.ullSize, fpi, fpo)
+		else:
+			copyres2(image, fpi, fpo)
 
 		StopTime = time.time()
 

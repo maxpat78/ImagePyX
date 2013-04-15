@@ -3,10 +3,10 @@ WIMArchive.PY - Part of Super Simple WIM Manager
 Common structures and functions
 '''
 
-VERSION = '0.28'
+VERSION = '0.29'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
-This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
+This free software manages MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
 
 import Codecs
 import copy
@@ -78,26 +78,49 @@ def take_sha(pathname, _blklen=32*1024, first_chunk=False):
 		fp.seek(0)
 	return fp, sha.digest()
 
-
-class WIN32_FIND_STREAM_DATA(Structure):
-	_fields_ = [("StreamSize", c_longlong), ("cStreamName", c_wchar*296)]
-
-class WIN32_FIND_DATA(Structure):
-	_pack_ = 1
-	_fields_ = [("dwFileAttributes", c_uint), ("ftCreationTime", c_ulonglong), ("ftLastAccessTime", c_ulonglong),
-	("ftLastWriteTime", c_ulonglong), ("dwnFileSizeHigh", c_uint), ("dwnFileSizeLow", c_uint), ("dwReserved0", c_uint),
-	("dwReserved1", c_uint), ("cFileName", c_wchar*260), ("cAlternateFileName", c_wchar*14)]
-
-class BY_HANDLE_FILE_INFORMATION(Structure):
-	_pack_ = 1
-	_fields_ = [("dwFileAttributes", c_uint), ("ftCreationTime", c_ulonglong), ("ftLastAccessTime", c_ulonglong),
-	("ftLastWriteTime", c_ulonglong), ("dwVolumeSerialNumber", c_uint), ("nFileSizeHigh", c_uint), ("nFileSizeLow", c_uint),
-	("nNumberOfLinks", c_uint), ("nFileIndexHigh", c_uint), ("nFileIndexLow", c_uint)]
+def copyres(offset, size, fp_in, fp_out):
+	"Copies a file resource"
+	fp_in.seek(offset)
+	todo = size
+	while todo:
+		if todo > 32768:
+			cb = 32768
+		else:
+			cb = todo
+		fp_out.write(fp_in.read(cb))
+		todo -= cb
+	logging.debug("Copied resource @0x%08X for %d bytes", offset, size)
 
 
 if os.name == 'nt':
+	class WIN32_FIND_STREAM_DATA(Structure):
+		_fields_ = [("StreamSize", c_longlong), ("cStreamName", c_wchar*296)]
+
+	class WIN32_STREAM_ID(Structure):
+		_pack_ = 1
+		_fields_ = [("dwStreamId", c_long), ("dwStreamAttributes", c_long), ("Size", c_longlong), ("dwStreamNameSize", c_long)]
+
+	class WIN32_FIND_DATA(Structure):
+		_pack_ = 1
+		_fields_ = [("dwFileAttributes", c_uint), ("ftCreationTime", c_ulonglong), ("ftLastAccessTime", c_ulonglong),
+		("ftLastWriteTime", c_ulonglong), ("dwnFileSizeHigh", c_uint), ("dwnFileSizeLow", c_uint), ("dwReserved0", c_uint),
+		("dwReserved1", c_uint), ("cFileName", c_wchar*260), ("cAlternateFileName", c_wchar*14)]
+
+	class BY_HANDLE_FILE_INFORMATION(Structure):
+		_pack_ = 1
+		_fields_ = [("dwFileAttributes", c_uint), ("ftCreationTime", c_ulonglong), ("ftLastAccessTime", c_ulonglong),
+		("ftLastWriteTime", c_ulonglong), ("dwVolumeSerialNumber", c_uint), ("nFileSizeHigh", c_uint), ("nFileSizeLow", c_uint),
+		("nNumberOfLinks", c_uint), ("nFileIndexHigh", c_uint), ("nFileIndexLow", c_uint)]
+
+	class myTokenPriv(Structure):
+		"Reduced TOKEN_PRIVILEGE structure"
+		_pack_ = 1
+		_fields_ = [('dwCount', c_ulong), ('luid', c_ulonglong), ('dwAttributes', c_ulong)]
+
 	def touch(pathname, WTime, CTime, ATime):
-		hFile = windll.kernel32.CreateFileW(pathname, 0x0100, 0, 0, 3, 0x02000000, 0)
+		#~ hFile = windll.kernel32.CreateFileW(pathname, 0x0100, 0, 0, 3, 0x02000000, 0)
+		# GENERIC_WRITE | ACCESS_SYSTEM_SECURITY
+		hFile = windll.kernel32.CreateFileW(pathname, 0x40000000|0x00040000L|0x00080000L, 0, 0, 3, 0x02000000, 0)
 		if hFile == -1:
 			logging.debug("Can't open '%s' to touch it!", pathname)
 			return
@@ -107,6 +130,98 @@ if os.name == 'nt':
 		if not windll.kernel32.SetFileTime(hFile, byref(CTime), byref(ATime), byref(WTime)):
 			logging.debug("Can't apply datetimes to '%s'!", pathname)
 		windll.kernel32.CloseHandle(hFile)
+
+	def get_ads_vista(pathname):
+		"Returns the Alternate Data Streams for a file"
+		ads = []
+
+		fsd = WIN32_FIND_STREAM_DATA()
+		# ImageX makes an unnamed data stream for the main contents, but
+		# this seems unnecessary to properly recover all the streams
+		h = windll.kernel32.FindFirstStreamW(pathname, 0, byref(fsd), 0)
+
+		if h != -1:
+			while windll.kernel32.FindNextStreamW(h, byref(fsd)): # CAVE! Fails with junction points!
+				if not fsd.cStreamName.endswith('$DATA'): continue
+				se = StreamEntry(64*'\0')
+				se.FileSize = fsd.StreamSize
+				se.StreamName = fsd.cStreamName[1:-6].encode('utf-16le')
+				se.wStreamNameLength = len(se.StreamName)
+				se.SrcPathname = pathname+fsd.cStreamName[:-6]
+				logging.debug("Made STREAMENTRY %s", se.SrcPathname)
+				ads += [se]
+			windll.kernel32.CloseHandle(h)
+		return ads
+
+	def get_ads_xp(pathname):
+		"Returns the Alternate Data Streams for a file (XP)"
+		# FILE_FLAG_BACKUP_SEMANTICS
+		hFile = windll.kernel32.CreateFileW(pathname, 0x80000000, 1, 0, 3, 0x02000000, 0)
+
+		ads = []
+		if hFile == -1: return ads
+
+		buf = create_string_buffer(4096)
+		context = c_int(0)
+		
+		while 1:
+			cb_read = c_int(0)
+			# Reads a stream header
+			if not windll.kernel32.BackupRead(hFile, buf, sizeof(WIN32_STREAM_ID), byref(cb_read), 0, 1, byref(context)):
+				return ads
+
+			if not cb_read.value: break
+			
+			wsid = cast(buf, POINTER(WIN32_STREAM_ID)).contents
+			#~ print 'dwStreamId=%d Size=%d' % (wsid.dwStreamId, wsid.Size)
+			if wsid.dwStreamId == 0: break
+			# Selects named $DATA ADS only!
+			if wsid.dwStreamId == 4 and wsid.dwStreamNameSize:
+				j = sizeof(WIN32_STREAM_ID)
+				# Reads the stream name, assuming it is < 4KiB
+				windll.kernel32.BackupRead(hFile, addressof(buf)+sizeof(WIN32_STREAM_ID), wsid.dwStreamNameSize, byref(cb_read), 0, 1, byref(context))
+				#~ print buf[j: j+wsid.dwStreamNameSize]
+				s = cast(buf[j: j+wsid.dwStreamNameSize]+'\0\0', c_wchar_p).value
+				se = StreamEntry(64*'\0')
+				se.FileSize = wsid.Size
+				se.StreamName = s[1:-6]#.encode('utf-16le')
+				se.wStreamNameLength = len(se.StreamName)
+				se.SrcPathname = pathname+s[:-6]
+				logging.debug("Made STREAMENTRY %s", se.SrcPathname)
+				ads += [se]
+			# Seeks to the next stream header (forcing a seek beyond the file's length)
+			dwNextStreamLow, dwNextStreamHigh = c_int(0), c_int(0) # effective seeked position
+			windll.kernel32.BackupSeek(hFile, -1, -1, byref(dwNextStreamLow), byref(dwNextStreamHigh), byref(context))
+
+		# Resets the backup contest
+		windll.kernel32.BackupRead(hFile, 0, 0, byref(cb_read), 1, 0, byref(context))
+		windll.kernel32.CloseHandle(hFile)
+		return ads
+
+	# Selects the right ADS function
+	if sys.getwindowsversion().major < 6: # WinXP or earlier
+		get_ads = get_ads_xp
+	else:
+		get_ads = get_ads_vista
+
+	def AcquirePrivilege(privilege):
+		"Acquires a privilege to the Python process"
+		hToken = c_int()
+		TOKEN_QUERY, TOKEN_ADJUST_PRIVILEGES = 0x8, 0x20
+		ret = windll.advapi32.OpenProcessToken(windll.kernel32.GetCurrentProcess(),TOKEN_ADJUST_PRIVILEGES|TOKEN_QUERY, byref(hToken))
+		if not ret: return ret
+		LUID = c_ulonglong()
+		ret = windll.advapi32.LookupPrivilegeValueA(0, privilege, byref(LUID))
+		if not ret: return ret
+		tkp = myTokenPriv()
+		tkp.dwCount = 1
+		tkp.luid = LUID
+		tkp.dwAttributes = 2 # SE_PRIVILEGE_ENABLED
+		ret = windll.advapi32.AdjustTokenPrivileges(hToken, 0, byref(tkp), sizeof(tkp), 0, 0)
+		if ret == 0 or windll.kernel32.GetLastError() != 0:
+			logging.debug("Privilege %s not held!", privilege)
+			return False
+		return True
 
 	def IsReparsePoint(pathname):
 		"Test if the object is a symbolic link or a junction point"
@@ -183,12 +298,17 @@ if os.name == 'nt':
 		return Flags, s
 
 else: # posix
+
 	def touch(pathname, WTime, CTime, ATime):
 		try:
 			os.utime(pathname, (nt2uxtime(ATime), nt2uxtime(WTime)))
 		except:
 			logging.debug("Can't touch %s", pathname)
 		return
+
+	def get_ads(pathname):
+		"Returns the Alternate Data Streams for a file"
+		return []
 
 	def IsReparsePoint(pathname):
 		"Test if the object is a symbolic link or a junction point"
@@ -232,6 +352,10 @@ else: # posix
 		s += SubstName + PrintName
 		return Flags, s
 
+	def AcquirePrivilege(privilege):
+		"Acquires a privilege to the Python process"
+		return 0
+
 
 def ParseReparseBuf(s, tag):
 	"Parses a WIM reparse point buffer and returns the decoded paths"
@@ -263,33 +387,6 @@ def MakeReparsePoint(tag, dst, target):
 			ret = 1
 		windll.kernel32.CloseHandle(hFile)
 		return ret
-
-class myTokenPriv(Structure):
-	_pack_ = 1
-	_fields_ = [
-	('dwCount', c_ulong),
-	('luid', c_ulonglong),
-	('dwAttributes', c_ulong)]
-
-def AcquirePrivilege(privilege):
-    "Acquires a privilege to the Python process"
-    if sys.platform not in ('win32', 'cygwin'): return 0
-    hToken = c_int()
-    TOKEN_QUERY, TOKEN_ADJUST_PRIVILEGES = 0x8, 0x20
-    ret = windll.advapi32.OpenProcessToken(windll.kernel32.GetCurrentProcess(),TOKEN_ADJUST_PRIVILEGES|TOKEN_QUERY, byref(hToken))
-    if not ret: return ret
-    LUID = c_ulonglong()
-    ret = windll.advapi32.LookupPrivilegeValueA(0, privilege, byref(LUID))
-    if not ret: return ret
-    tkp = myTokenPriv()
-    tkp.dwCount = 1
-    tkp.luid = LUID
-    tkp.dwAttributes = 2 # SE_PRIVILEGE_ENABLED
-    ret = windll.advapi32.AdjustTokenPrivileges(hToken, 0, byref(tkp), sizeof(tkp), 0, 0)
-    if ret == 0 or windll.kernel32.GetLastError() != 0:
-        logging.debug("Privilege %s not acquired!", privilege)
-        return False
-    return True
 
 def print_progress(start_time, totalBytes, totalBytesToDo):
 	"Prints a progress string"

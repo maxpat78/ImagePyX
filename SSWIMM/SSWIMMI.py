@@ -3,10 +3,10 @@ SWIMMI.PY - Part of Super Simple WIM Manager
 Info module
 '''
 
-VERSION = '0.28'
+VERSION = '0.29'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
-This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
+This free software manages MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
 
 import hashlib
 import logging

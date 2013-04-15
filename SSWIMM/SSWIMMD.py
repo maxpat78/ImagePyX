@@ -3,10 +3,10 @@ SWIMMD.PY - Part of Super Simple WIM Manager
 Decompressor module
 '''
 
-VERSION = '0.28'
+VERSION = '0.29'
 
 COPYRIGHT = '''Copyright (C)2012-2013, by maxpat78. GNU GPL v2 applies.
-This free software creates MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
+This free software manages MS WIM Archives WITH ABSOLUTELY NO WARRANTY!'''
 
 import fnmatch
 import w32_fnmatch
@@ -368,6 +368,7 @@ def extract(opts, args):
 
 	# This is required to properly restore SDs!
 	# WARNING! If applying to a preexisting folder, one could need to take the ownership of the full tree!
+	AcquirePrivilege("SeBackupPrivilege")
 	AcquirePrivilege("SeRestorePrivilege")
 	AcquirePrivilege("SeSecurityPrivilege")
 	AcquirePrivilege("SeTakeOwnershipPrivilege")
@@ -446,7 +447,7 @@ def extract(opts, args):
 						if sys.platform in ('win32', 'cygwin'):
 							#~ os.remove(fname) # can't make the hard link if the file pre exists!
 							if windll.kernel32.CreateHardLinkW(fname, first_fname, 0): # no Admin required!
-								logging.debug("Duplicate File resource: '%s' hard linked to '%s'", fname, first_name)
+								logging.debug("Duplicate File resource: '%s' hard linked to '%s'", fname, first_fname)
 						else:
 							os.link(first_fname, fname)
 					else:
