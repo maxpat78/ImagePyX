@@ -434,6 +434,9 @@ def extract(opts, args):
 			
 			first_fname = ''
 			for fres in direntries[ote]: # File Resources with the same hash (duplicates, links...)
+				if fres.FileName.endswith('__wimlib_UNIX_data'):
+					if os.name == 'nt': continue
+					
 				# target pathname
 				fname = os.path.join(args[2], directories[fres._parent][1:], fres.FileName)
 
@@ -443,7 +446,7 @@ def extract(opts, args):
 
 				# Expands the resource the first time, then duplicates or hardlinks it
 				if first_fname:
-					if fres.dwReparseReserved:
+					if isinstance(fres, DirEntry) and fres.dwReparseReserved:
 						if sys.platform in ('win32', 'cygwin'):
 							#~ os.remove(fname) # can't make the hard link if the file pre exists!
 							if windll.kernel32.CreateHardLinkW(fname, first_fname, 0): # no Admin required!
@@ -524,8 +527,20 @@ def extract(opts, args):
 					continue
 				if not os.path.exists(fname):
 					continue
+				if fres.FileName.endswith('__wimlib_UNIX_data') and os.name != 'nt':
+					s = open(fname, 'rb').read()
+					ver, uid, gid, mode = struct.unpack('<HHHH', s)
+					real_fname = fname[:-21]
+					try:
+						os.chown(real_fname, uid, gid)
+					except:
+						print "Can't apply original UID/GID to", real_fname
+					try:
+						os.chmod(real_fname, mode)
+					except:
+						print "Can't apply original mode to", real_fname
+					os.unlink(fname)
 				if isinstance(fres, DirEntry): # ADS have less attributes
-				#~ if hasattr(fres, 'liLastWriteTime'): # ADS haven't all attributes
 					if sys.platform in ('win32', 'cygwin'):
 						windll.kernel32.SetFileAttributesW(fname, fres.dwAttributes)
 						security.apply(fres.dwSecurityId, fname)

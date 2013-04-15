@@ -201,13 +201,17 @@ def make_fileresources(out, comp, entries, refcounts, total_input_bytes, start_t
 	
 	for e in entries:
 		# Skips folders, NULL entries and empty files. Reparse points are handled like files.
-		if (e.dwAttributes & 0x10 and not e.dwAttributes & 0x400) or not e.liLength or not e.FileSize: continue
+		if isinstance(e, DirEntry):
+			if e.wStreams: # has ADSs
+				for ads in e.alt_data_streams:
+					entries.append(ads)
+			if (e.dwAttributes & 0x10 and not e.dwAttributes & 0x400) or not e.liLength or not e.FileSize: continue
+			# Handles a special case: reparse points
+			if e.dwAttributes & 0x400:
+				e.SrcPathname = StringIO(e.sReparseData)
+				e.bCompressed = 0
+				e.liSubdirOffset = 0
 		e.bCompressed = comp
-		# Handles a special case: reparse points
-		if e.dwAttributes & 0x400:
-			e.SrcPathname = StringIO(e.sReparseData)
-			e.bCompressed = 0
-			e.liSubdirOffset = 0
 		try:
 			fp, chunk_crc = take_sha(e.SrcPathname, first_chunk=1)
 		except:
@@ -231,7 +235,7 @@ def make_fileresources(out, comp, entries, refcounts, total_input_bytes, start_t
 		else:
 			chunk_hash_table[chunk_crc] = 1
 			calc_crc = True
-		if e.dwAttributes & 0x400:
+		if isinstance(e, DirEntry) and e.dwAttributes & 0x400:
 			e.SrcPathname = StringIO(e.sReparseData)
 		e.Offset = out.tell() # Fileresource start offset inside WIM
 		logging.debug("Starting new File resource @%08X", e.Offset)
@@ -372,6 +376,7 @@ def write_direntries(cout, entries, subdirs, srcdir):
 			cout.write(struct.pack('<Q', 0))
 			logging.debug("Wrote NULL QWORD")
 			continue
+		if isinstance(e, StreamEntry): continue
 		if e.dwAttributes & 0x10: # folder
 			dirCount += 1
 			key = e.SrcPathname

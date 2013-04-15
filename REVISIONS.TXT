@@ -107,6 +107,8 @@ FEB 2012	Planning the WIM archive classes
 		can export images with recompression
 		can read ADS before Vista, with BackupRead (Windows)
 		more code reorganization in WimArchive.py
+15.04.13	correctly captures and restores ADS again on Windows
+		can capture and restore $$__wimlib_UNIX_data (wimlib compatible)
 
 
 
@@ -132,5 +134,4 @@ TODO
 - compare valid WIM size with xmldata?
 - check too small WIM (< 208+nn bytes?)
 - better test it under Linux:
-  + capture user/group in ALT streams? -> $$__wimlib_UNIX_data see dentry.h
   + using star * with export conflicts with bash?

@@ -308,7 +308,15 @@ else: # posix
 
 	def get_ads(pathname):
 		"Returns the Alternate Data Streams for a file"
-		return []
+		# This is compatible with wimlib-imagex ONLY!
+		st = os.lstat(pathname)
+		s = struct.pack("<HHHH", 0, st.st_uid, st.st_gid, st.st_mode)
+		se = StreamEntry(64*'\0')
+		se.FileSize = len(s)
+		se.StreamName = '$$__wimlib_UNIX_data'.encode('utf-16le')
+		se.wStreamNameLength = len(se.StreamName)
+		se.SrcPathname = StringIO(s)
+		return [se]
 
 	def IsReparsePoint(pathname):
 		"Test if the object is a symbolic link or a junction point"

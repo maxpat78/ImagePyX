@@ -24,6 +24,8 @@ On Windows, it can use the native RTL Xpress codec (8 only) and provides complet
  - directory junctions
  - symbolic links[3]
 
+On Linux, it can handle hard and symbolic links; also, it's able to capture and restore UNIX permissions (UID, GID, MODE).
+
 
 Useful links about WIM Images:
 - http://en.wikipedia.org/wiki/Windows_Imaging_Format
@@ -31,7 +33,7 @@ Useful links about WIM Images:
 
 
 FOLDER CONTENTS:
-- ImagePyX.py		the main Python module (rev. 0.28), driver for the SSWIMM package
+- ImagePyX.py		the main Python module (rev. 0.29), driver for the SSWIMM package
 - SSWIMM		package directory containing the submodules
 - README.MD		this file
 - REVISIONS.TXT		developement history and todo
@@ -43,7 +45,7 @@ Look at REVISIONS.TXT for details about developement history and things to do.
 
 
 
-[1] Developed and tested on Windows with Python 2.7.3, 32-bit; partly tested with Linux Ubuntu 12.10, x32
+[1] Developed and tested on Windows with Python 2.7.3, 32-bit; tested with Linux Ubuntu 12.10, x32
 
 [2] A simplified version with the codecs only can be built with GCC 4.7 on Windows: look at mingw_build.sh
 
