@@ -109,6 +109,7 @@ FEB 2012	Planning the WIM archive classes
 		more code reorganization in WimArchive.py
 15.04.13	correctly captures and restores ADS again on Windows
 		can capture and restore $$__wimlib_UNIX_data (wimlib compatible)
+21.05.13	doesn't try anymore to store an empty ADS
 
 
 

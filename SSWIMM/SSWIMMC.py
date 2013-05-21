@@ -204,7 +204,8 @@ def make_fileresources(out, comp, entries, refcounts, total_input_bytes, start_t
 		if isinstance(e, DirEntry):
 			if e.wStreams: # has ADSs
 				for ads in e.alt_data_streams:
-					entries.append(ads)
+					if ads.FileSize:
+						entries.append(ads)
 			if (e.dwAttributes & 0x10 and not e.dwAttributes & 0x400) or not e.liLength or not e.FileSize: continue
 			# Handles a special case: reparse points
 			if e.dwAttributes & 0x400:
