@@ -83,7 +83,8 @@ Attributes:\t%X\n""" % (args[0], uuid.UUID(bytes_le=wim.gWIMGuid), wim.dwImageCo
 wim.usPartNumber, wim.usTotalParts, wim.dwFlags)
 
 	fp.seek(wim.rhXmlData.liOffset)
+	data = fp.read(wim.rhXmlData.liOriginalSize)
 
 	print "Available Image choices:\n------------------------"
-	xml = minidom.parse(fp)
+	xml = minidom.parseString(data)
 	print xml.toprettyxml()[23:]
